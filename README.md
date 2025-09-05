@@ -17,9 +17,27 @@ A tiny, zero-dependency Kotlin logging utility with a clean DSL.
 
 ## Installation
 - Gradle (Kotlin DSL):
-  - not yet
+```kotlin
+dependencies {
+    implementation("com.github.nexus421:Klogger:0.0.1")
+}
+    
+repositories {
+    mavenCentral()
+    maven { url = uri("https://jitpack.io") }
+}
+```
 - Gradle (Groovy):
-  - not yet
+```groovy
+dependencies {
+    implementation 'com.github.nexus421:Klogger:0.0.1'
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+}
+```
 
 ## Quick start
 ```kotlin
