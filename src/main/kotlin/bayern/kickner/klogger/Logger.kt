@@ -80,6 +80,98 @@ object Logger {
         override fun log(level: Level, tag: String, message: String) = block(level, tag, message)
     }
 
+    /**
+     * Very simple file-backed queue for log entries. One file per entry, persisted on disk.
+     * File format (UTF-8):
+     *   line1 = LEVEL name
+     *   line2 = TAG
+     *   line3..n = MESSAGE (may contain newlines)
+     */
+    private class FileBackedLogQueue(private val dir: File) {
+        private val counter = java.util.concurrent.atomic.AtomicLong(0)
+        init {
+            dir.mkdirs()
+        }
+
+        fun isEmpty() = dir.list()?.isEmpty() ?: true
+
+        @Synchronized
+        fun enqueue(level: Level, tag: String, message: String) {
+            val name = System.currentTimeMillis().toString() + "_" + counter.getAndIncrement() + ".logq"
+            val file = File(dir, name)
+            val tmp = File(dir, "$name.tmp")
+            tmp.writeText(level.name + "\n" + tag + "\n" + message)
+            tmp.renameTo(file)
+        }
+        @Synchronized
+        fun listFiles(): List<File> = dir.listFiles { f -> f.isFile && f.name.endsWith(".logq") }?.sortedBy { it.name } ?: emptyList()
+        @Synchronized
+        fun read(file: File): Triple<Level, String, String> {
+            val lines = file.readLines()
+            val lvl = Level.valueOf(lines.first())
+            val tag = if (lines.size >= 2) lines[1] else ""
+            val msg = if (lines.size >= 3) lines.drop(2).joinToString("\n") else ""
+            return Triple(lvl, tag, msg)
+        }
+        @Synchronized
+        fun remove(file: File) { file.delete() }
+    }
+
+    /**
+     * Destination that forwards logs to another destination. If forwarding fails, the log is cached in a
+     * file-backed queue. On each log attempt, it also tries to flush cached logs.
+     */
+    private class CachedForwardingDestination(
+        private val target: Destination,
+        private val queue: FileBackedLogQueue,
+        private val maxFlushPerCall: Int = 10,
+    ) : Destination {
+        override fun log(level: Level, tag: String, message: String) {
+            // First try to forward the current log
+            val forwarded = try {
+                target.log(level, tag, message)
+                true
+            } catch (_: Throwable) {
+                false
+            }
+            if (!forwarded) {
+                // Cache it for later
+                runCatching { queue.enqueue(level, tag, message) }
+            }
+            // Opportunistically try to flush some cached logs
+            tryFlush()
+        }
+        private fun tryFlush() {
+            if(queue.isEmpty()) return
+
+            val files = runCatching { queue.listFiles() }.getOrDefault(emptyList())
+            var count = 0
+            for (f in files) {
+                if (count >= maxFlushPerCall) break
+                val (lvl, tg, msg) = try {
+                    queue.read(f)
+                } catch (_: Throwable) {
+                    // Corrupt entry, drop it
+                    runCatching { queue.remove(f) }
+                    continue
+                }
+                val logProcessedSuccessful = try {
+                    target.log(lvl, tg, msg)
+                    true
+                } catch (_: Throwable) {
+                    false
+                }
+                if (logProcessedSuccessful) {
+                    runCatching { queue.remove(f) }
+                    count++
+                } else {
+                    // If we cannot send the oldest, stop to avoid busy loops
+                    break
+                }
+            }
+        }
+    }
+
 
     /**
      * Runtime configuration of the logger.
@@ -88,14 +180,14 @@ object Logger {
      * - minLevel: only messages >= this level will be processed (unless debug is true)
      */
     internal data class Config(
-        val destinations: MutableList<Destination> = CopyOnWriteArrayList(listOf(ConsoleDestination())),
+        val destinations: MutableList<Destination> = CopyOnWriteArrayList(),
         var debug: Boolean = false,
         var minLevel: Level = Level.DEBUG,
     )
 
 
     @Volatile
-    private lateinit var config: Config
+    private var config: Config = Config()
 
 
     /**
@@ -104,7 +196,6 @@ object Logger {
      * so swapping it is safe for concurrent readers.
      */
     fun configure(block: LoggerDsl.() -> Unit) {
-        if (::config.isInitialized.not()) config = Config()
         val dsl = LoggerDsl(config.copy(destinations = CopyOnWriteArrayList(config.destinations)))
         dsl.block()
         config = dsl.build()
@@ -157,6 +248,20 @@ object Logger {
         /** Adds a custom (lambda) destination. */
         fun logToCustom(block: (level: Level, tag: String, message: String) -> Unit) {
             cfg.destinations.add(LambdaDestination(block))
+        }
+
+        /**
+         * Adds a destination that caches logs persistently and forwards to a provided lambda target.
+         * If forwarding fails (exception), logs are stored in cacheDir and retried on subsequent calls.
+         */
+        fun logToCachedForwarding(
+            cacheDirPath: String,
+            target: (level: Level, tag: String, message: String) -> Unit,
+            maxFlushPerCall: Int = 10
+        ) {
+            val queue = FileBackedLogQueue(File(cacheDirPath))
+            val targetDest = LambdaDestination(target)
+            cfg.destinations.add(CachedForwardingDestination(targetDest, queue, maxFlushPerCall))
         }
 
         /**

@@ -63,6 +63,10 @@ fun main() {
   - logToConsole(): Console destination. DEBUG/INFO/WARN -> stdout, ERROR/CRASH -> stderr.
   - logToFile(path: String): Append to a file. Parent directories are created; file is created if missing.
   - logToCustom { level, tag, message -> ... }: Add a custom lambda destination.
+  - logToCachedForwarding(cacheDirPath: String, target: (Level, String, String) -> Unit, maxFlushPerCall: Int = 10):
+    Cache logs persistently in cacheDir if target throws (e.g., no internet), and retry on subsequent logs.
+  - logToCachedForwardingToConsole(cacheDirPath: String, maxFlushPerCall: Int = 10): Cache + forward to console.
+  - logToCachedForwardingToFile(cacheDirPath: String, path: String, maxFlushPerCall: Int = 10): Cache + forward to file.
   - minLevel: Minimum level processed (DEBUG < INFO < WARN < ERROR < CRASH).
   - debug: If true, minLevel is ignored and all messages are processed.
 - Logging methods with explicit tag:
@@ -87,19 +91,36 @@ fun main() {
   - class Service { fun work() { try { /*...*/ } catch (e: Throwable) { errorLog({ "failed" }, e) } } }
 - Crash level
   - errorLog({ "fatal" }, sendAsCrash = true)
+- Cached forwarding (persistent cache) to a custom target
+```kotlin
+var serverOnline = false
+Logger.configure {
+    logToCachedForwarding("./logcache", target = { level, tag, message ->
+        if (!serverOnline) throw IllegalStateException("Server offline")
+        // e.g., perform HTTP POST here
+        println("SENT: " + Logger.formatLogDefault(level, tag, message))
+    })
+}
+// cached while offline
+debugLog { "will be cached" }
+serverOnline = true
+// triggers flush of cached logs
+infoLog { "now online -> flush" }
+```
 
 ## Formatting
 - Default log format by formatLogDefault(level, tag, message):
   - dd.MM.yyyy HH:mm:ss LEVEL/TAG: message
-
-Thread-safety
+ 
+## Thread-safety
 - Destinations use CopyOnWriteArrayList for concurrent reads/writes.
 - File writes are synchronized per FileDestination instance.
 - Config reference is @Volatile and swapped atomically on configure().
-
+ 
 ## Notes
 - Message parameters are lambdas; if filtered by minLevel (and debug=false), the lambda is not evaluated.
 - File destination appends a platform-specific newline after each entry.
+- Before you call Logger.configure, logging is safe but no destinations are configured; messages are ignored (no-op).
 
 ## License
 WTFPL
