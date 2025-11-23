@@ -310,19 +310,20 @@ fun staticDebugLog(level: Logger.Level, tag: String, msg: () -> String) {
 inline fun <reified T : Any> T.debugLog(noinline msg: () -> String) = Logger.debug(DEFAULT_LOG_TAG, msg)
 inline fun <reified T : Any> T.infoLog(noinline msg: () -> String) = Logger.info(DEFAULT_LOG_TAG, msg)
 inline fun <reified T : Any> T.warnLog(noinline msg: () -> String) = Logger.warn(DEFAULT_LOG_TAG, msg)
+
+//Callback nicht notwendig, da errors idR immer ausgegeben werden.
 inline fun <reified T : Any> T.errorLog(
-    noinline msg: () -> String,
+    msg: String,
     ex: Throwable? = null,
     printStackTrace: Boolean = true,
     sendAsCrash: Boolean = false
 ) {
     val logBlock: () -> String = {
-        val base = msg()
         val suffix = ex?.let {
             "\n" + if (printStackTrace) it.stackTraceToString() else ("Exception: " + (it.message
                 ?: it::class.simpleName))
         } ?: ""
-        base + suffix
+        msg + suffix
     }
     if (sendAsCrash) Logger.crash(DEFAULT_LOG_TAG, logBlock) else Logger.error(DEFAULT_LOG_TAG, logBlock)
 }
