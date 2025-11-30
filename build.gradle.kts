@@ -21,11 +21,25 @@ kotlin {
     jvmToolchain(17)
 }
 
+java {
+    withSourcesJar()
+    withJavadocJar()
+}
+
 publishing {
+    repositories {
+        maven {
+            name = "nexus421Maven"
+            url = uri("https://maven.kickner.bayern/releases")
+            credentials(PasswordCredentials::class)
+            authentication {
+                create<BasicAuthentication>("basic")
+            }
+        }
+    }
     publications {
         create<MavenPublication>("maven") {
-
-            groupId = "com.github.nexus421"
+            groupId = "bayern.kickner"
             artifactId = "Klogger"
             version = globalVersion
             from(components["java"])
