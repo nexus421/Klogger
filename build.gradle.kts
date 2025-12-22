@@ -1,10 +1,10 @@
 plugins {
-    kotlin("jvm") version "2.2.10"
+    kotlin("jvm") version "2.3.0"
     `maven-publish`
 }
 
 group = "com.github.nexus421"
-version = "0.0.2"
+version = "0.0.3"
 val globalVersion = version.toString()
 repositories {
     mavenCentral()
