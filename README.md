@@ -19,23 +19,29 @@ A tiny, zero-dependency Kotlin logging utility with a clean DSL.
 - Gradle (Kotlin DSL):
 ```kotlin
 dependencies {
-    implementation("com.github.nexus421:Klogger:0.0.1")
+  implementation("bayern.kickner:Klogger:0.0.3")
 }
     
 repositories {
     mavenCentral()
-    maven { url = uri("https://jitpack.io") }
+  maven {
+    name = "nexus421Maven"
+    url = uri("https://maven.kickner.bayern/<repository>")
+  }
 }
 ```
 - Gradle (Groovy):
 ```groovy
 dependencies {
-    implementation 'com.github.nexus421:Klogger:0.0.1'
+  implementation "bayern.kickner:Klogger:0.0.3"
 }
 
 repositories {
     mavenCentral()
-    maven { url 'https://jitpack.io' }
+  maven {
+    name "nexus421Maven"
+    url "https://maven.kickner.bayern/<repository>"
+  }
 }
 ```
 
