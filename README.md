@@ -25,8 +25,8 @@ dependencies {
 repositories {
     mavenCentral()
   maven {
-    name = "nexus421Maven"
-    url = uri("https://maven.kickner.bayern/<repository>")
+    name = "nexus421MavenReleases"
+    url = uri("https://maven.kickner.bayern/releases")
   }
 }
 ```
@@ -39,8 +39,8 @@ dependencies {
 repositories {
     mavenCentral()
   maven {
-    name "nexus421Maven"
-    url "https://maven.kickner.bayern/<repository>"
+    name = "nexus421MavenReleases"
+    url = uri("https://maven.kickner.bayern/releases")
   }
 }
 ```
