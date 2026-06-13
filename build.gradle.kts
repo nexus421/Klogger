@@ -1,10 +1,11 @@
 plugins {
     kotlin("jvm") version "2.3.0"
+    kotlin("plugin.serialization") version "2.3.0"
     `maven-publish`
 }
 
 group = "com.github.nexus421"
-version = "0.0.3"
+version = "0.1.0"
 val globalVersion = version.toString()
 repositories {
     mavenCentral()
@@ -12,6 +13,8 @@ repositories {
 
 dependencies {
     testImplementation(kotlin("test"))
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
 }
 
 tasks.test {

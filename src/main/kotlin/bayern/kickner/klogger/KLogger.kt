@@ -12,7 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Logger.configure {
  *   logToConsole()                    // log to stdout (INFO and below), stderr for ERROR/CRASH
  *   // optionally in addition or instead:
- *   logToFile("logs/app.log")        // append to file (file and parent dirs are created if missing)
+ *   logToFile(File("logs/app.log"))  // append to file (file and parent dirs are created if missing)
  *   // or a custom destination:
  *   logToCustom { level, tag, message -> println("CUSTOM $level/$tag: $message") }
  *   // configuration flags:
@@ -54,7 +54,11 @@ object KLogger {
      * Configure the logger using a small DSL. Existing destinations are kept,
      * new destinations can be added. The configuration reference is @Volatile,
      * so swapping it is safe for concurrent readers.
+     *
+     * This method is `@Synchronized` to prevent lost updates when called concurrently.
+     * In practice, configure should only be called once at application startup.
      */
+    @Synchronized
     fun configure(block: LoggerDsl.() -> Unit) {
         val dsl = LoggerDsl(config.copy(destinations = CopyOnWriteArrayList(config.destinations)))
         dsl.block()
@@ -77,6 +81,7 @@ object KLogger {
     /** Log a CRASH message (like ERROR, but separate level). */
     fun crash(tag: String, msg: () -> String) = log(Level.CRASH, tag, msg)
 
+    @Volatile
     private var checkIfLoggingIsConfigured = false
 
     /**

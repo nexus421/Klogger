@@ -101,6 +101,7 @@ internal class FileBackedLogQueue(private val dir: File) {
         dir.mkdirs()
     }
 
+    @Synchronized
     fun isEmpty() = dir.list()?.isEmpty() ?: true
 
     @Synchronized
