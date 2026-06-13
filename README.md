@@ -1,132 +1,239 @@
 # Klogger
 
-A tiny, zero-dependency Kotlin logging utility with a clean DSL.
-
-## Badges
-- Kotlin: JVM
+A lightweight Kotlin logging utility with a clean DSL, multiple destinations, and an optional Loki appender.
 
 ## Table of contents
-- Installation
-- Quick start
-- API overview
-- Examples
-- Formatting
-- Thread-safety
-- Notes
-- License
+
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [API overview](#api-overview)
+- [Loki appender](#loki-appender)
+- [Examples](#examples)
+- [Formatting](#formatting)
+- [Thread-safety](#thread-safety)
+- [Notes](#notes)
+- [License](#license)
 
 ## Installation
-- Gradle (Kotlin DSL):
+
+**Gradle (Kotlin DSL):**
 ```kotlin
 dependencies {
-  implementation("bayern.kickner:Klogger:0.0.3")
-}
-    
-repositories {
-    mavenCentral()
-  maven {
-    name = "nexus421MavenReleases"
-    url = uri("https://maven.kickner.bayern/releases")
-  }
-}
-```
-- Gradle (Groovy):
-```groovy
-dependencies {
-  implementation "bayern.kickner:Klogger:0.0.3"
+    implementation("bayern.kickner:Klogger:0.1.0")
 }
 
 repositories {
     mavenCentral()
-  maven {
-    name = "nexus421MavenReleases"
-    url = uri("https://maven.kickner.bayern/releases")
-  }
+    maven {
+        name = "nexus421MavenReleases"
+        url = uri("https://maven.kickner.bayern/releases")
+    }
+}
+```
+
+**Gradle (Groovy):**
+```groovy
+dependencies {
+    implementation "bayern.kickner:Klogger:0.1.0"
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = "nexus421MavenReleases"
+        url = "https://maven.kickner.bayern/releases"
+    }
 }
 ```
 
 ## Quick start
 ```kotlin
 fun main() {
-    Logger.configure {
+    KLogger.configure {
         logToConsole()
-        // logToFile("logs/app.log")
-        // logToCustom { level, tag, message -> println("CUSTOM $level/$tag: $message") }
-        minLevel = Logger.Level.DEBUG   // only messages >= minLevel are processed
-        debug = false                   // if true, minLevel is ignored
+        minLevel = KLogger.Level.DEBUG   // only messages >= minLevel are processed
+        debug = false                    // if true, minLevel is ignored
     }
 
-    // Uses DEFAULT_LOG_TAG (caller simple class name)
-    class Demo { fun run() { debugLog { "Hello from Klogger" } } }
+    class Demo {
+        fun run() { debugLog { "Hello from Klogger" } }
+    }
     Demo().run()
 }
 ```
-## Example output
-- 01.01.2025 14:15:16 DEBUG/Demo: Hello from Klogger
+
+**Output:**
+
+```
+01.01.2025 14:15:16 DEBUG/Demo: Hello from Klogger
+```
 
 ## API overview
-- Logger.configure { ... }: Configure destinations and flags via DSL.
-  - logToConsole(): Console destination. DEBUG/INFO/WARN -> stdout, ERROR/CRASH -> stderr.
-  - logToFile(path: String): Append to a file. Parent directories are created; file is created if missing.
-  - logToCustom { level, tag, message -> ... }: Add a custom lambda destination.
-  - logToCachedForwarding(cacheDirPath: String, target: (Level, String, String) -> Unit, maxFlushPerCall: Int = 10):
-    Cache logs persistently in cacheDir if target throws (e.g., no internet), and retry on subsequent logs.
-  - logToCachedForwardingToConsole(cacheDirPath: String, maxFlushPerCall: Int = 10): Cache + forward to console.
-  - logToCachedForwardingToFile(cacheDirPath: String, path: String, maxFlushPerCall: Int = 10): Cache + forward to file.
-  - minLevel: Minimum level processed (DEBUG < INFO < WARN < ERROR < CRASH).
-  - debug: If true, minLevel is ignored and all messages are processed.
-- Logging methods with explicit tag:
-  - Logger.debug(tag, msg: () -> String)
-  - Logger.info(tag, msg: () -> String)
-  - Logger.warn(tag, msg: () -> String)
-  - Logger.error(tag, msg: () -> String)
-  - Logger.crash(tag, msg: () -> String)
-- Extension helpers using DEFAULT_LOG_TAG (non-static contexts):
-  - (Any.)debugLog { ... }
-  - (Any.)infoLog { ... }
-  - (Any.)warnLog { ... }
-  - (Any.)errorLog(msg: () -> String, ex: Throwable? = null, printStackTrace: Boolean = true, sendAsCrash: Boolean = false)
-  - (Any.)errorLog(ex: Throwable)
+
+### `KLogger.configure { ... }`
+
+Configure destinations and flags via DSL. Existing destinations are preserved on subsequent calls.
+
+| Method                                                         | Description                                                                 |
+|----------------------------------------------------------------|-----------------------------------------------------------------------------|
+| `logToConsole()`                                               | DEBUG/INFO/WARN → stdout, ERROR/CRASH → stderr                              |
+| `logToFile(File)`                                              | Append to file; parent directories and file are created if missing          |
+| `logToCustom { level, tag, message -> }`                       | Custom lambda destination                                                   |
+| `logToCachedForwarding(cacheDirPath, target, maxFlushPerCall)` | Cache logs to disk if target throws; flush on subsequent log calls          |
+| `logToLoki(...)`                                               | Send logs in batches to a Loki server (see [Loki appender](#loki-appender)) |
+| `minLevel`                                                     | Minimum level processed: `DEBUG < INFO < WARN < ERROR < CRASH`              |
+| `debug`                                                        | If `true`, `minLevel` is ignored and all messages are dispatched            |
+
+### Logging methods (explicit tag)
+
+```kotlin
+KLogger.debug(tag) { "message" }
+KLogger.info(tag) { "message" }
+KLogger.warn(tag) { "message" }
+KLogger.error(tag) { "message" }
+KLogger.crash(tag) { "message" }
+```
+
+### Extension helpers (uses `DEFAULT_LOG_TAG` = simple class name)
+
+```kotlin
+debugLog { "message" }
+infoLog { "message" }
+warnLog { "message" }
+errorLog("message", ex = null, printStackTrace = true, sendAsCrash = false)
+errorLog(ex: Throwable)
+```
+
+For top-level / static contexts where `DEFAULT_LOG_TAG` is unavailable:
+
+```kotlin
+staticLog(KLogger.Level.INFO, "MyTag") { "message" }
+```
+
+## Loki appender
+
+Buffers log entries and sends them in batches via HTTP POST to a Loki server.
+
+```kotlin
+KLogger.configure {
+  logToConsole()
+  logToLoki(
+    lokiBaseUrl = "http://loki:3100",
+    appName = "my-app",
+    bearerToken = "secret"
+  )
+}
+```
+
+All parameters with their defaults:
+
+| Parameter       | Default                     | Description                                                          |
+|-----------------|-----------------------------|----------------------------------------------------------------------|
+| `lokiBaseUrl`   | –                           | Base URL of the Loki server (trailing `/` is stripped automatically) |
+| `appName`       | –                           | Value of the `app` label in Loki                                     |
+| `bearerToken`   | –                           | `Authorization: Bearer` header value                                 |
+| `contextFields` | `emptyMap()`                | Key-value pairs embedded in every log line as JSON fields            |
+| `maxQueueSize`  | `500`                       | Buffer capacity; oldest entry is dropped on overflow                 |
+| `flushInterval` | `1000 ms`                   | Interval between batch flushes                                       |
+| `batchMaxSize`  | `50`                        | Max entries per HTTP request                                         |
+| `scope`         | internal app-lifetime scope | `CoroutineScope` for the flush loop                                  |
+
+**Dynamic context fields** (e.g. per-request tracing):
+
+```kotlin
+LokiAppender.contextFields = mapOf("callId" to id, "tenant" to name)
+```
+
+**Log line format** sent to Loki:
+
+```json
+{
+  "level": "INFO",
+  "tag": "Handler",
+  "message": "...",
+  "callId": "123",
+  "tenant": "Foo"
+}
+```
+
+To stop logging: `LokiAppender.scope.cancel()`
 
 ## Examples
-- Log to file
-  - Logger.configure { logToFile("logs/app.log"); minLevel = Logger.Level.INFO }
-- Custom destination
-  - Logger.configure { logToCustom { level, tag, msg -> println("[$level][$tag] $msg") } }
-- Error with exception
-  - class Service { fun work() { try { /*...*/ } catch (e: Throwable) { errorLog({ "failed" }, e) } } }
-- Crash level
-  - errorLog({ "fatal" }, sendAsCrash = true)
-- Cached forwarding (persistent cache) to a custom target
+
+**Log to file:**
+
+```kotlin
+KLogger.configure {
+    logToFile(File("logs/app.log"))
+    minLevel = KLogger.Level.INFO
+}
+```
+
+**Custom destination:**
+
+```kotlin
+KLogger.configure {
+    logToCustom { level, tag, msg -> println("[$level][$tag] $msg") }
+}
+```
+
+**Error with exception:**
+
+```kotlin
+class Service {
+    fun work() {
+        try { /*...*/ } catch (e: Throwable) { errorLog("failed", ex = e) }
+    }
+}
+```
+
+**Crash level:**
+
+```kotlin
+errorLog("fatal error", sendAsCrash = true)
+```
+
+**Cached forwarding (persistent queue, e.g. for unreliable network):**
 ```kotlin
 var serverOnline = false
-Logger.configure {
+KLogger.configure {
     logToCachedForwarding("./logcache", target = { level, tag, message ->
         if (!serverOnline) throw IllegalStateException("Server offline")
-        // e.g., perform HTTP POST here
-        println("SENT: " + Logger.formatLogDefault(level, tag, message))
+        println("SENT: " + KLogger.formatLogDefault(level, tag, message))
     })
 }
-// cached while offline
-debugLog { "will be cached" }
+
+debugLog { "cached while offline" }
 serverOnline = true
-// triggers flush of cached logs
-infoLog { "now online -> flush" }
+infoLog { "now online – triggers cache flush" }
 ```
 
 ## Formatting
-- Default log format by formatLogDefault(level, tag, message):
-  - dd.MM.yyyy HH:mm:ss LEVEL/TAG: message
- 
+
+Default format produced by `KLogger.formatLogDefault(level, tag, message)`:
+
+```
+dd.MM.yyyy HH:mm:ss LEVEL/TAG: message
+```
+
 ## Thread-safety
-- Destinations use CopyOnWriteArrayList for concurrent reads/writes.
-- File writes are synchronized per FileDestination instance.
-- Config reference is @Volatile and swapped atomically on configure().
- 
+
+| Component                | Guarantee                                                                         |
+|--------------------------|-----------------------------------------------------------------------------------|
+| `KLogger.configure()`    | `@Synchronized` – safe for concurrent calls, no lost updates                      |
+| Destination list         | `CopyOnWriteArrayList` – safe concurrent reads during dispatch                    |
+| `FileDestination`        | `@Synchronized` per instance                                                      |
+| Config reference         | `@Volatile` – swapped atomically                                                  |
+| `LokiAppender.enqueue()` | Lock-free (`Channel.trySend`); timestamps are strictly monotonic via `AtomicLong` |
+| `LokiAppender` fields    | `@Volatile` throughout                                                            |
+
 ## Notes
-- Message parameters are lambdas; if filtered by minLevel (and debug=false), the lambda is not evaluated.
-- File destination appends a platform-specific newline after each entry.
-- Before you call Logger.configure, logging is safe but no destinations are configured; messages are ignored (no-op).
+
+- Message lambdas are **not evaluated** when filtered by `minLevel` (no unnecessary string allocation).
+- A warning is printed to `stderr` once if logging is used before `configure()` is called.
+- `configure()` **accumulates** destinations across calls; it does not reset existing ones.
+- The Loki appender requires `kotlinx-coroutines-core` and `kotlinx-serialization-json` (both are transitive
+  dependencies of this library).
 
 ## License
 WTFPL

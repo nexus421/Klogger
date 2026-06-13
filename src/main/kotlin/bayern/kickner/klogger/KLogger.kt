@@ -50,6 +50,12 @@ object KLogger {
     @Volatile
     private var config: Config = Config()
 
+    /** Resets all state to defaults. Intended for use in unit tests only. */
+    internal fun resetForTest() {
+        config = Config()
+        checkIfLoggingIsConfigured = false
+    }
+
     /**
      * Configure the logger using a small DSL. Existing destinations are kept,
      * new destinations can be added. The configuration reference is @Volatile,
