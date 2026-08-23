@@ -74,15 +74,15 @@ fun main() {
 
 Configure destinations and flags via DSL. Existing destinations are preserved on subsequent calls.
 
-| Method                                                         | Description                                                                 |
-|----------------------------------------------------------------|-----------------------------------------------------------------------------|
-| `logToConsole()`                                               | DEBUG/INFO/WARN → stdout, ERROR/CRASH → stderr                              |
-| `logToFile(File)`                                              | Append to file; parent directories and file are created if missing          |
-| `logToCustom { level, tag, message -> }`                       | Custom lambda destination                                                   |
-| `logToCachedForwarding(cacheDirPath, target, maxFlushPerCall)` | Cache logs to disk if target throws; flush on subsequent log calls          |
-| `logToLoki(...)`                                               | Send logs in batches to a Loki server (see [Loki appender](#loki-appender)) |
-| `minLevel`                                                     | Minimum level processed: `DEBUG < INFO < WARN < ERROR < CRASH`              |
-| `debug`                                                        | If `true`, `minLevel` is ignored and all messages are dispatched            |
+| Method                                                                       | Description                                                                                                                                        |
+|------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `logToConsole()`                                                             | DEBUG/INFO/WARN → stdout, ERROR/CRASH → stderr                                                                                                     |
+| `logToFile(File)`                                                            | Append to file; parent directories and file are created if missing                                                                                 |
+| `logToCustom { level, tag, message -> }`                                     | Custom lambda destination                                                                                                                          |
+| `logToCachedForwarding(cacheDirPath, target, maxFlushPerCall, maxQueueSize)` | Cache logs to disk if target throws; flushes oldest-first on subsequent log calls, dropping the oldest entries beyond `maxQueueSize` (default 500) |
+| `logToLoki(...)`                                                             | Send logs in batches to a Loki server (see [Loki appender](#loki-appender))                                                                        |
+| `minLevel`                                                                   | Minimum level processed: `DEBUG < INFO < WARN < ERROR < CRASH`                                                                                     |
+| `debug`                                                                      | If `true`, `minLevel` is ignored and all messages are dispatched                                                                                   |
 
 ### Logging methods (explicit tag)
 

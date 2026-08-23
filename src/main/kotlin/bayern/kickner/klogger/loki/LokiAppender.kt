@@ -3,10 +3,8 @@ package bayern.kickner.klogger.loki
 import bayern.kickner.klogger.LoggerDsl
 import bayern.kickner.klogger.errorLog
 import bayern.kickner.klogger.loki.LokiAppender.batchMaxSize
-import bayern.kickner.klogger.loki.LokiAppender.contextFields
 import bayern.kickner.klogger.loki.LokiAppender.flushInterval
 import bayern.kickner.klogger.loki.LokiAppender.lastTimestampNs
-import bayern.kickner.klogger.loki.LokiAppender.start
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -155,7 +153,15 @@ object LokiAppender {
         bearerToken = token
         this.flushInterval = flushInterval
         this.batchMaxSize = batchMaxSize
-        channel = Channel(maxQueueSize, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        val newChannel = Channel<Entry>(maxQueueSize, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        // Carry over any entries still buffered in the old channel so that reconfiguring
+        // (calling logToLoki again) doesn't silently drop unflushed log lines.
+        val oldChannel = channel
+        while (true) {
+            val entry = oldChannel.tryReceive().getOrNull() ?: break
+            newChannel.trySend(entry)
+        }
+        channel = newChannel
         flushJob?.cancel()
         this.scope = scope
         flushJob = scope.launch(Dispatchers.IO) {

@@ -94,7 +94,7 @@ internal class LambdaDestination(private val block: (level: Level, tag: String, 
  * @constructor Creates a FileBackedLogQueue and ensures that the specified directory exists.
  * @param dir The directory where log files will be stored.
  */
-internal class FileBackedLogQueue(private val dir: File) {
+internal class FileBackedLogQueue(private val dir: File, private val maxQueueSize: Int = 500) {
     private val counter = java.util.concurrent.atomic.AtomicLong(0)
 
     init {
@@ -106,11 +106,28 @@ internal class FileBackedLogQueue(private val dir: File) {
 
     @Synchronized
     fun enqueue(level: Level, tag: String, message: String) {
-        val name = System.currentTimeMillis().toString() + "_" + counter.getAndIncrement() + ".logq"
+        // Counter is zero-padded so filename sort order stays correct even once it reaches double
+        // digits within the same millisecond (plain "9" would otherwise sort after "10" lexically).
+        val name = System.currentTimeMillis().toString() + "_" +
+                counter.getAndIncrement().toString().padStart(19, '0') + ".logq"
         val file = File(dir, name)
         val tmp = File(dir, "$name.tmp")
         tmp.writeText(level.name + "\n" + tag + "\n" + message)
-        tmp.renameTo(file)
+        if (tmp.renameTo(file)) {
+            trimToMaxSize()
+        } else {
+            // Rename failed (e.g. cross-filesystem move) - don't leave an orphaned .tmp file around
+            tmp.delete()
+            errorLog("FileBackedLogQueue: failed to persist cached log entry to $file")
+        }
+    }
+
+    /** Drops the oldest cached entries beyond [maxQueueSize] so the cache can't grow unbounded. */
+    private fun trimToMaxSize() {
+        val files = listFiles()
+        val excess = files.size - maxQueueSize
+        if (excess <= 0) return
+        files.take(excess).forEach { runCatching { it.delete() } }
     }
 
     @Synchronized
@@ -141,16 +158,27 @@ internal class CachedForwardingDestination(
     private val queue: FileBackedLogQueue,
     private val maxFlushPerCall: Int = 10,
 ) : Destination {
+    /**
+     * Synchronized so concurrent [log] calls can't race on [tryFlush]: without this, two threads
+     * could both read the same cached entry before either removes it, delivering it twice.
+     */
+    @Synchronized
     override fun log(level: Level, tag: String, message: String) {
-        // First try to forward the current log
-        val forwarded = try {
-            target.log(level, tag, message)
-            true
-        } catch (_: Throwable) {
-            false
-        }
-        if (!forwarded) {
-            // Cache it for later
+        if (queue.isEmpty()) {
+            // No backlog: try to forward the current log directly
+            val forwarded = try {
+                target.log(level, tag, message)
+                true
+            } catch (_: Throwable) {
+                false
+            }
+            if (!forwarded) {
+                runCatching { queue.enqueue(level, tag, message) }
+            }
+        } else {
+            // A backlog exists: queue this entry too instead of forwarding it directly, so
+            // delivery to the target preserves chronological order instead of the newest
+            // message jumping ahead of older cached ones.
             runCatching { queue.enqueue(level, tag, message) }
         }
         // Opportunistically try to flush some cached logs

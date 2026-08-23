@@ -82,4 +82,24 @@ class FileBackedLogQueueTest {
         val roundTrippedLevels = queue.listFiles().map { queue.read(it).first }
         assertEquals(KLogger.Level.entries.toList(), roundTrippedLevels)
     }
+
+    @Test
+    fun `insertion order is preserved once the counter reaches double digits`() {
+        // Zero-padded counter must keep sorting correctly past the "9 -> 10" boundary
+        val expected = (0 until 15).map { "msg$it" }
+        expected.forEach { queue.enqueue(KLogger.Level.INFO, "t", it) }
+
+        val messages = queue.listFiles().map { queue.read(it).third }
+        assertEquals(expected, messages)
+    }
+
+    @Test
+    fun `enqueue drops the oldest entries once maxQueueSize is exceeded`() {
+        val boundedQueue = FileBackedLogQueue(tempDir, maxQueueSize = 3)
+
+        repeat(5) { i -> boundedQueue.enqueue(KLogger.Level.INFO, "tag", "msg$i") }
+
+        val messages = boundedQueue.listFiles().map { boundedQueue.read(it).third }
+        assertEquals(listOf("msg2", "msg3", "msg4"), messages)
+    }
 }

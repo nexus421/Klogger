@@ -49,7 +49,8 @@ class LoggerDsl internal constructor(private val cfg: KLogger.Config) {
     /**
      * Configures a destination that caches log messages to the local filesystem if the target
      * destination fails to handle them, using a file-backed queue for persistence. On each invocation,
-     * this method also attempts to forward cached messages to the target destination.
+     * this method also attempts to forward cached messages to the target destination, oldest first,
+     * so chronological order is preserved even while a backlog exists.
      *
      * @param cacheDirPath The directory path where log messages will be cached if forwarding fails.
      *                     Cached messages are stored persistently in this directory until they
@@ -59,13 +60,16 @@ class LoggerDsl internal constructor(private val cfg: KLogger.Config) {
      *               log messages directly or flushed from the cache.
      * @param maxFlushPerCall The maximum number of cached log messages to attempt to flush during
      *                        a single invocation of the logging mechanism. Defaults to 10.
+     * @param maxQueueSize The maximum number of cached entries kept on disk. Once exceeded, the
+     *                     oldest cached entries are dropped to make room for new ones. Defaults to 500.
      */
     fun logToCachedForwarding(
         cacheDirPath: String,
         target: (level: KLogger.Level, tag: String, message: String) -> Unit,
-        maxFlushPerCall: Int = 10
+        maxFlushPerCall: Int = 10,
+        maxQueueSize: Int = 500
     ) {
-        val queue = FileBackedLogQueue(File(cacheDirPath))
+        val queue = FileBackedLogQueue(File(cacheDirPath), maxQueueSize)
         val targetDest = LambdaDestination(target)
         cfg.destinations.add(CachedForwardingDestination(targetDest, queue, maxFlushPerCall))
     }

@@ -45,7 +45,7 @@ class CachedForwardingDestinationTest {
     }
 
     @Test
-    fun `cached messages are flushed when target recovers`() {
+    fun `cached messages are flushed before a newly recovered message, preserving order`() {
         var shouldFail = true
         val received = mutableListOf<String>()
         val dest = CachedForwardingDestination(
@@ -61,25 +61,23 @@ class CachedForwardingDestinationTest {
         assertTrue(received.isEmpty())
         assertFalse(queue.isEmpty())
 
-        // Second call succeeds → flushes cache + delivers new message
+        // Second call: target recovered, but a backlog exists → this message must not jump
+        // ahead of the older cached one
         shouldFail = false
         dest.log(KLogger.Level.INFO, "tag", "new msg")
 
-        assertContains(received, "cached msg")
-        assertContains(received, "new msg")
+        assertEquals(listOf("cached msg", "new msg"), received)
         assertTrue(queue.isEmpty())
     }
 
     @Test
     fun `level and tag are preserved through cache round-trip`() {
         var shouldFail = true
-        var receivedLevel: KLogger.Level? = null
-        var receivedTag: String? = null
+        val received = mutableListOf<Triple<KLogger.Level, String, String>>()
         val dest = CachedForwardingDestination(
-            target = LambdaDestination { level, tag, _ ->
+            target = LambdaDestination { level, tag, message ->
                 if (shouldFail) throw RuntimeException("offline")
-                receivedLevel = level
-                receivedTag = tag
+                received.add(Triple(level, tag, message))
             },
             queue = queue
         )
@@ -88,8 +86,8 @@ class CachedForwardingDestinationTest {
         shouldFail = false
         dest.log(KLogger.Level.INFO, "trigger", "flush")
 
-        assertEquals(KLogger.Level.CRASH, receivedLevel)
-        assertEquals("OriginalTag", receivedTag)
+        assertContains(received, Triple(KLogger.Level.CRASH, "OriginalTag", "msg"))
+        assertContains(received, Triple(KLogger.Level.INFO, "trigger", "flush"))
     }
 
     @Test
@@ -109,11 +107,42 @@ class CachedForwardingDestinationTest {
         repeat(4) { i -> dest.log(KLogger.Level.INFO, "tag", "msg$i") }
         shouldFail = false
 
-        // One trigger call: flushes at most 2 cached + delivers 1 new
+        // Backlog exists, so the trigger message is queued too (order preservation) instead of
+        // being delivered directly; at most 2 of the now 5 queued entries are flushed
         dest.log(KLogger.Level.INFO, "tag", "trigger")
 
-        // 2 flushed from cache + 1 new = 3 total; 2 still in cache
-        assertEquals(3, received.size)
+        assertEquals(listOf("msg0", "msg1"), received)
         assertFalse(queue.isEmpty())
+    }
+
+    @Test
+    fun `concurrent log calls do not deliver cached entries twice`() {
+        var shouldFail = true
+        val received = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val dest = CachedForwardingDestination(
+            target = LambdaDestination { _, _, message ->
+                if (shouldFail) throw RuntimeException("offline")
+                received.add(message)
+            },
+            queue = queue,
+            maxFlushPerCall = 50
+        )
+
+        // Cache a batch of messages while the target is down
+        repeat(20) { i -> dest.log(KLogger.Level.INFO, "tag", "msg$i") }
+        assertEquals(20, queue.listFiles().size)
+
+        shouldFail = false
+
+        // Many threads race to trigger a flush of the same backlog concurrently
+        val threads = (1..10).map { n -> Thread { dest.log(KLogger.Level.INFO, "tag", "trigger$n") } }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+
+        // 20 cached + 10 triggers = 30 messages total, each delivered exactly once
+        assertEquals(30, received.size)
+        val counts = received.groupingBy { it }.eachCount()
+        assertTrue(counts.values.all { it == 1 }, "found duplicate deliveries: $counts")
+        assertTrue(queue.isEmpty())
     }
 }

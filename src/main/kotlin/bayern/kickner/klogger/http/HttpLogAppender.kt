@@ -8,6 +8,7 @@ import kotlinx.coroutines.channels.Channel
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -88,7 +89,9 @@ class HttpLogAppender(
     @Volatile
     var batchMaxSize: Int = initialBatchMaxSize
 
-    private val headers = mutableMapOf<String, String>()
+    // ConcurrentHashMap so headers can be safely rotated at runtime (e.g. a refreshed bearer
+    // token) while the flush loop concurrently reads them on the IO dispatcher.
+    private val headers = ConcurrentHashMap<String, String>()
     private val channel = Channel<LogEntry>(maxQueueSize, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val lastTimestampNs = AtomicLong(0L)
 
@@ -170,7 +173,8 @@ class HttpLogAppender(
 /**
  * Registers an [HttpLogAppender] as a log destination and starts its flush loop.
  *
- * Configure the appender (headers, method, etc.) **before** this call.
+ * Configure the appender (headers, method, etc.) before this call. Headers can also be updated
+ * afterwards (e.g. to rotate a token) since they're backed by a thread-safe map.
  * Keep a reference to [appender] to cancel the flush loop later via `appender.scope.cancel()`.
  */
 fun LoggerDsl.logToHttp(appender: HttpLogAppender) {
