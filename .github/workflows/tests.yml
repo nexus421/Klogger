@@ -21,11 +21,11 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run tests
-        run: ./gradlew test --no-daemon
+        run: ./gradlew allTests --no-daemon
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: build/reports/tests/test
+          path: build/reports/tests

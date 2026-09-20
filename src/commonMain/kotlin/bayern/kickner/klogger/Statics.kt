@@ -24,7 +24,7 @@ inline fun <reified T : Any> T.debugLog(noinline msg: () -> String) = KLogger.de
 inline fun <reified T : Any> T.infoLog(noinline msg: () -> String) = KLogger.info(DEFAULT_LOG_TAG, msg)
 inline fun <reified T : Any> T.warnLog(noinline msg: () -> String) = KLogger.warn(DEFAULT_LOG_TAG, msg)
 
-//Callback nicht notwendig, da errors idR immer ausgegeben werden.
+// Callback nicht notwendig, da errors idR immer ausgegeben werden.
 inline fun <reified T : Any> T.errorLog(
     msg: String,
     ex: Throwable? = null,

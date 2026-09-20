@@ -13,7 +13,7 @@ class CachedForwardingDestinationTest {
     @BeforeTest
     fun setUp() {
         tempDir = Files.createTempDirectory("klogger-test").toFile()
-        queue = FileBackedLogQueue(tempDir)
+        queue = FileBackedLogQueue(tempDir.path)
     }
 
     @AfterTest
@@ -187,7 +187,7 @@ class CachedForwardingDestinationTest {
         val brokenDir = File(tempDir, "not-a-dir").apply { writeText("") }
         val dest = CachedForwardingDestination(
             target = LambdaDestination { _, _, _ -> throw RuntimeException("offline") },
-            queue = FileBackedLogQueue(brokenDir)
+            queue = FileBackedLogQueue(brokenDir.path)
         )
 
         val stderr = captureStderr { dest.log(KLogger.Level.WARN, "MyTag", "msg") }

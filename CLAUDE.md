@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Klogger is a lightweight Kotlin logging library (JVM) published as a Gradle artifact (`bayern.kickner:Klogger`). It
-provides a singleton `KLogger` with a DSL for configuring multiple simultaneous log destinations (console, file, custom
+Klogger is a lightweight Kotlin Multiplatform (KMP) logging library published as a Gradle artifact (`bayern.kickner:Klogger`). It
+targets JVM, Apple/iOS (iosArm64, iosSimulatorArm64, iosX64), macOS (macosArm64, macosX64), Linux (linuxX64), and Windows (mingwX64).
+It provides a singleton `KLogger` with a DSL for configuring multiple simultaneous log destinations (console, file, custom
 lambda, cached forwarding, Loki, generic HTTP).
 
 ## Commands
@@ -16,28 +17,34 @@ Build:
 ./gradlew build
 ```
 
-Run all tests:
+Run all tests across host targets:
 
 ```bash
-./gradlew test
+./gradlew allTests
 ```
 
-Run a single test class:
+Run JVM tests:
 
 ```bash
-./gradlew test --tests "bayern.kickner.klogger.KLoggerTest"
+./gradlew jvmTest
 ```
 
-Run a single test method:
+Run Linux native tests (on Linux host):
 
 ```bash
-./gradlew test --tests "bayern.kickner.klogger.KLoggerTest.messages below minLevel are not dispatched"
+./gradlew linuxX64Test
 ```
 
 Publish to the configured Maven repo (`nexus421Maven`, requires credentials):
 
 ```bash
 ./gradlew publish
+```
+
+Publish to local Maven repository:
+
+```bash
+./gradlew publishToMavenLocal
 ```
 
 Requires JDK 17+ (toolchain pinned to 17 in `build.gradle.kts`; `jitpack.yml` builds with JDK 21).
@@ -47,13 +54,13 @@ Requires JDK 17+ (toolchain pinned to 17 in `build.gradle.kts`; `jitpack.yml` bu
 Everything lives under `bayern.kickner.klogger`. There is one core module plus two optional appender modules in
 subpackages.
 
-- **`KLogger`** ([KLogger.kt](src/main/kotlin/bayern/kickner/klogger/KLogger.kt)) — the singleton entry point. Holds an
-  internal `@Volatile Config` (destinations list + `debug`/`minLevel` flags) that is swapped atomically on
-  `configure()`. `configure()` is `@Synchronized` and copies the existing destination list so repeated calls
+- **`KLogger`** ([KLogger.kt](src/commonMain/kotlin/bayern/kickner/klogger/KLogger.kt)) — the singleton entry point. Holds an
+  internal `Config` (destinations list + `debug`/`minLevel` flags) that is swapped atomically on
+  `configure()`. `configure()` is synchronized and copies the existing destination list so repeated calls
   *accumulate* destinations rather than replacing them. The `log()` dispatcher checks level filtering, evaluates the
   message lambda only if not filtered, then calls every destination and swallows destination exceptions with
   `runCatching` so a broken destination never breaks the app.
-- **`LoggerDsl`** ([LoggerDsl.kt](src/main/kotlin/bayern/kickner/klogger/LoggerDsl.kt)) — the receiver passed into
+- **`LoggerDsl`** ([LoggerDsl.kt](src/commonMain/kotlin/bayern/kickner/klogger/LoggerDsl.kt)) — the receiver passed into
   `KLogger.configure { }`. Each `logTo*` function appends a `Destination` to the config. The Loki and HTTP appenders add
   their own `logToLoki`/`logToHttp` extension functions onto this same class from their subpackages, so a new appender
   module should follow that pattern (extension function on `LoggerDsl` + own subpackage) instead of modifying

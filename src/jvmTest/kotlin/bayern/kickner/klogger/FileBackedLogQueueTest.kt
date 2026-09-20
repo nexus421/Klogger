@@ -13,7 +13,7 @@ class FileBackedLogQueueTest {
     @BeforeTest
     fun setUp() {
         tempDir = Files.createTempDirectory("klogger-test").toFile()
-        queue = FileBackedLogQueue(tempDir)
+        queue = FileBackedLogQueue(tempDir.path)
     }
 
     @AfterTest
@@ -34,7 +34,7 @@ class FileBackedLogQueueTest {
 
     @Test
     fun `maxQueueSize below 1 is rejected at construction`() {
-        assertFailsWith<IllegalArgumentException> { FileBackedLogQueue(tempDir, maxQueueSize = 0) }
+        assertFailsWith<IllegalArgumentException> { FileBackedLogQueue(tempDir.path, maxQueueSize = 0) }
     }
 
     @Test
@@ -168,7 +168,7 @@ class FileBackedLogQueueTest {
 
     @Test
     fun `enqueue drops the oldest entries once maxQueueSize is exceeded`() {
-        val boundedQueue = FileBackedLogQueue(tempDir, maxQueueSize = 3)
+        val boundedQueue = FileBackedLogQueue(tempDir.path, maxQueueSize = 3)
 
         repeat(5) { i -> boundedQueue.enqueue(KLogger.Level.INFO, "tag", "msg$i") }
 
