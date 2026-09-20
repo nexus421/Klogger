@@ -1,5 +1,7 @@
 # Klogger
 
+[![Tests](https://github.com/nexus421/Klogger/actions/workflows/tests.yml/badge.svg)](https://github.com/nexus421/Klogger/actions/workflows/tests.yml)
+
 A lightweight Kotlin logging utility with a clean DSL, multiple destinations, and an optional Loki appender.
 
 ## Table of contents

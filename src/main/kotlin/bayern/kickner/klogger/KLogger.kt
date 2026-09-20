@@ -16,7 +16,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  *   // or a custom destination:
  *   logToCustom { level, tag, message -> println("CUSTOM $level/$tag: $message") }
  *   // configuration flags:
- *   minLevel = Logger.Level.DEBUG     // only messages >= minLevel are processed (unless debug = true)
+ *   minLevel = KLogger.Level.DEBUG     // only messages >= minLevel are processed (unless debug = true)
  *   debug = false                     // if true, minLevel is ignored and everything is logged
  * }
  *
