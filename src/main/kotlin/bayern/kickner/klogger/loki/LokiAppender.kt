@@ -1,7 +1,8 @@
 package bayern.kickner.klogger.loki
 
+import bayern.kickner.klogger.Destination
+import bayern.kickner.klogger.LambdaDestination
 import bayern.kickner.klogger.LoggerDsl
-import bayern.kickner.klogger.errorLog
 import bayern.kickner.klogger.loki.LokiAppender.batchMaxSize
 import bayern.kickner.klogger.loki.LokiAppender.flushInterval
 import bayern.kickner.klogger.loki.LokiAppender.lastTimestampNs
@@ -27,7 +28,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * When the buffer is full, [BufferOverflow.DROP_OLDEST] kicks in automatically.
  * A background coroutine flushes the channel periodically and sends up to
  * [batchMaxSize] entries as a single HTTP POST to Loki.
- * On Loki failure, errors are only logged – the application continues unaffected.
+ * On Loki failure, errors are reported on stderr – the application continues unaffected.
  *
  * ## Configuration
  * All parameters ([maxQueueSize], [flushInterval], [batchMaxSize]) are set via [logToLoki]
@@ -126,6 +127,11 @@ object LokiAppender {
     @Volatile
     private var flushJob: Job? = null
 
+    /** The one destination instance representing this appender; registered by [logToLoki]. */
+    internal val destination: Destination = LambdaDestination { level, tag, message ->
+        enqueue(level.name, tag, message)
+    }
+
     /**
      * Starts the flush loop. Called by [logToLoki].
      *
@@ -167,7 +173,9 @@ object LokiAppender {
         flushJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(this@LokiAppender.flushInterval)
-                flush()
+                // Anything escaping flush() would end this coroutine and silently stop all
+                // forwarding for the rest of the JVM's lifetime - report it and keep looping.
+                runCatching { flush() }.onFailure { System.err.println("LokiAppender: flush failed – $it") }
             }
         }
     }
@@ -181,15 +189,16 @@ object LokiAppender {
         val nowNs = System.currentTimeMillis() * 1_000_000L
         // updateAndGet guarantees atomic collision avoidance: always >= nowNs and > last value
         val tsNs = lastTimestampNs.updateAndGet { prev -> maxOf(prev + 1, nowNs) }
-        channel.trySend(Entry(tsNs.toString(), level, tag, message, contextFields))
+        // toMap() copies: a caller-owned MutableMap must not leak later mutations into this entry
+        channel.trySend(Entry(tsNs.toString(), level, tag, message, contextFields.toMap()))
     }
 
     /**
      * Drains up to [batchMaxSize] entries from the channel and sends them as a single HTTP request.
      * Each log line is serialized as JSON including all context fields.
-     * Errors are only logged, never thrown.
+     * Errors are reported on stderr, never thrown.
      */
-    private fun flush() {
+    internal fun flush() {
         val currentBatchMaxSize = batchMaxSize
         val batch = ArrayList<Entry>(currentBatchMaxSize)
         for (i in 0 until currentBatchMaxSize) {
@@ -228,12 +237,14 @@ object LokiAppender {
                 conn.inputStream.use { it.readBytes() }
             } else {
                 conn.errorStream?.use { it.readBytes() }
-                errorLog("LokiAppender: HTTP $responseCode")
+                // stderr, never KLogger: this appender is itself a KLogger destination, logging the
+                // failure would feed it straight back into the Loki buffer.
+                System.err.println("LokiAppender: HTTP $responseCode")
             }
             // No disconnect() – allows TCP connection reuse via JVM keep-alive pool
         }.onFailure {
-            // Loki unreachable → silently drop, application keeps running
-            errorLog("LokiAppender: send failed – ${it.message}")
+            // Loki unreachable → drop the batch, application keeps running
+            System.err.println("LokiAppender: send failed – ${it.message}")
         }
     }
 }
@@ -268,7 +279,5 @@ fun LoggerDsl.logToLoki(
 ) {
     LokiAppender.contextFields = contextFields
     LokiAppender.start(lokiBaseUrl, appName, bearerToken, maxQueueSize, flushInterval, batchMaxSize, scope)
-    logToCustom { level, tag, message ->
-        LokiAppender.enqueue(level.name, tag, message)
-    }
+    logTo(LokiAppender.destination)
 }

@@ -47,6 +47,15 @@ class LoggerDsl internal constructor(private val cfg: KLogger.Config) {
     }
 
     /**
+     * Registers a destination instance unless that same instance is already registered. Used by
+     * appenders that keep one stable destination, so re-registering them (e.g. calling `logToHttp`
+     * again with new settings) doesn't deliver every log line twice.
+     */
+    internal fun logTo(destination: Destination) {
+        if (destination !in cfg.destinations) cfg.destinations.add(destination)
+    }
+
+    /**
      * Configures a destination that caches log messages to the local filesystem if the target
      * destination fails to handle them, using a file-backed queue for persistence. On each invocation,
      * this method also attempts to forward cached messages to the target destination, oldest first,
@@ -59,9 +68,11 @@ class LoggerDsl internal constructor(private val cfg: KLogger.Config) {
      *               three arguments: the log level, tag, and message. This destination will receive
      *               log messages directly or flushed from the cache.
      * @param maxFlushPerCall The maximum number of cached log messages to attempt to flush during
-     *                        a single invocation of the logging mechanism. Defaults to 10.
+     *                        a single invocation of the logging mechanism. Must be >= 1. Defaults to 10.
      * @param maxQueueSize The maximum number of cached entries kept on disk. Once exceeded, the
-     *                     oldest cached entries are dropped to make room for new ones. Defaults to 500.
+     *                     oldest cached entries are dropped to make room for new ones. Must be >= 1.
+     *                     Defaults to 500.
+     * @throws IllegalArgumentException if [maxFlushPerCall] or [maxQueueSize] is below 1.
      */
     fun logToCachedForwarding(
         cacheDirPath: String,

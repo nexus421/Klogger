@@ -3,6 +3,7 @@ package bayern.kickner.klogger
 import bayern.kickner.klogger.KLogger.Level
 import bayern.kickner.klogger.KLogger.formatLogDefault
 import java.io.File
+import java.io.IOException
 
 /**
  * Represents a logging destination where log messages can be written.
@@ -98,11 +99,13 @@ internal class FileBackedLogQueue(private val dir: File, private val maxQueueSiz
     private val counter = java.util.concurrent.atomic.AtomicLong(0)
 
     init {
+        require(maxQueueSize >= 1) { "maxQueueSize must be >= 1, was $maxQueueSize" }
         dir.mkdirs()
     }
 
+    /** True if no queue entry exists. Only `.logq` files count - never `.tmp` or unrelated files. */
     @Synchronized
-    fun isEmpty() = dir.list()?.isEmpty() ?: true
+    fun isEmpty(): Boolean = listFiles().isEmpty()
 
     @Synchronized
     fun enqueue(level: Level, tag: String, message: String) {
@@ -112,14 +115,21 @@ internal class FileBackedLogQueue(private val dir: File, private val maxQueueSiz
                 counter.getAndIncrement().toString().padStart(19, '0') + ".logq"
         val file = File(dir, name)
         val tmp = File(dir, "$name.tmp")
-        tmp.writeText(level.name + "\n" + tag + "\n" + message)
-        if (tmp.renameTo(file)) {
-            trimToMaxSize()
-        } else {
-            // Rename failed (e.g. cross-filesystem move) - don't leave an orphaned .tmp file around
+        // The format is line-based (level / tag / message): a line break in the tag would shift
+        // the message into the tag on read-back, so it is flattened. The message may span lines.
+        val singleLineTag = tag.replace("\r\n", " ").replace('\n', ' ').replace('\r', ' ')
+        try {
+            tmp.writeText(level.name + "\n" + singleLineTag + "\n" + message)
+            // Signal a failure to the caller instead of logging it: logging from in here would
+            // re-enter KLogger while holding the queue lock (and recurse via the cached forwarder).
+            if (!tmp.renameTo(file)) throw IOException("FileBackedLogQueue: failed to persist cached log entry to $file")
+        } catch (e: Throwable) {
+            // Never leave a partial or orphaned .tmp behind (disk full mid-write, cross-filesystem
+            // move, ...) - it would linger on disk forever.
             tmp.delete()
-            errorLog("FileBackedLogQueue: failed to persist cached log entry to $file")
+            throw e
         }
+        trimToMaxSize()
     }
 
     /** Drops the oldest cached entries beyond [maxQueueSize] so the cache can't grow unbounded. */
@@ -158,32 +168,38 @@ internal class CachedForwardingDestination(
     private val queue: FileBackedLogQueue,
     private val maxFlushPerCall: Int = 10,
 ) : Destination {
+    init {
+        require(maxFlushPerCall >= 1) { "maxFlushPerCall must be >= 1, was $maxFlushPerCall" }
+    }
+
     /**
      * Synchronized so concurrent [log] calls can't race on [tryFlush]: without this, two threads
      * could both read the same cached entry before either removes it, delivering it twice.
      */
     @Synchronized
     override fun log(level: Level, tag: String, message: String) {
-        if (queue.isEmpty()) {
-            // No backlog: try to forward the current log directly
-            val forwarded = try {
-                target.log(level, tag, message)
-                true
-            } catch (_: Throwable) {
-                false
-            }
-            if (!forwarded) {
-                runCatching { queue.enqueue(level, tag, message) }
-            }
-        } else {
-            // A backlog exists: queue this entry too instead of forwarding it directly, so
-            // delivery to the target preserves chronological order instead of the newest
-            // message jumping ahead of older cached ones.
-            runCatching { queue.enqueue(level, tag, message) }
-        }
-        // Opportunistically try to flush some cached logs
+        // Flush older cached entries first so delivery to the target preserves chronological
+        // order instead of the newest message jumping ahead of older cached ones.
         tryFlush()
+        val delivered = if (queue.isEmpty()) {
+            // No (remaining) backlog: forward directly, cache on failure
+            forward(level, tag, message) || cache(level, tag, message)
+        } else {
+            // Backlog remains (target still down, or more entries than maxFlushPerCall): queue
+            // this entry behind it instead of forwarding it directly. If the cache itself is
+            // unavailable (disk full, permissions, ...), deliver directly after all - a possible
+            // order violation is preferable to losing the entry.
+            cache(level, tag, message) || forward(level, tag, message)
+        }
+        // Never reported through KLogger: we are inside a destination, that would recurse
+        if (!delivered) System.err.println("CachedForwardingDestination: dropped $level log '$tag' - target and cache both unavailable")
     }
+
+    private fun forward(level: Level, tag: String, message: String): Boolean =
+        runCatching { target.log(level, tag, message) }.isSuccess
+
+    private fun cache(level: Level, tag: String, message: String): Boolean =
+        runCatching { queue.enqueue(level, tag, message) }.isSuccess
 
     private fun tryFlush() {
         if (queue.isEmpty()) return
@@ -199,13 +215,7 @@ internal class CachedForwardingDestination(
                 runCatching { queue.remove(f) }
                 continue
             }
-            val logProcessedSuccessful = try {
-                target.log(lvl, tg, msg)
-                true
-            } catch (_: Throwable) {
-                false
-            }
-            if (logProcessedSuccessful) {
+            if (forward(lvl, tg, msg)) {
                 runCatching { queue.remove(f) }
                 count++
             } else {

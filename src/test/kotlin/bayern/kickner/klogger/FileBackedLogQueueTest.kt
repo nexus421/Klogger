@@ -1,6 +1,7 @@
 package bayern.kickner.klogger
 
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import kotlin.test.*
 
@@ -18,6 +19,78 @@ class FileBackedLogQueueTest {
     @AfterTest
     fun tearDown() {
         tempDir.deleteRecursively()
+    }
+
+    /**
+     * Makes the next enqueue() fail: a directory is pre-created at every path (with [suffix]) the
+     * entry could get - counter 0, any timestamp within the next few seconds. With ".logq" the
+     * rename onto the directory fails; with ".logq.tmp" already the write fails.
+     */
+    private fun blockNextPersist(suffix: String = ".logq") {
+        val now = System.currentTimeMillis()
+        val counter = 0L.toString().padStart(19, '0')
+        for (t in now until now + 5000) File(tempDir, "${t}_$counter$suffix").mkdir()
+    }
+
+    @Test
+    fun `maxQueueSize below 1 is rejected at construction`() {
+        assertFailsWith<IllegalArgumentException> { FileBackedLogQueue(tempDir, maxQueueSize = 0) }
+    }
+
+    @Test
+    fun `enqueue throws when the entry cannot be persisted`() {
+        blockNextPersist()
+
+        assertFailsWith<IOException> { queue.enqueue(KLogger.Level.INFO, "tag", "msg") }
+    }
+
+    @Test
+    fun `a persist failure is not reported through KLogger`() {
+        // Reporting through KLogger would re-enter the logger from inside a destination while
+        // holding the queue lock - and recurse when the cached forwarder is itself a destination.
+        val dispatched = mutableListOf<String>()
+        KLogger.resetForTest()
+        KLogger.configure { logToCustom { _, _, message -> dispatched.add(message) } }
+        try {
+            blockNextPersist()
+            runCatching { queue.enqueue(KLogger.Level.INFO, "tag", "msg") }
+
+            assertTrue(dispatched.isEmpty(), "persist failure was dispatched through KLogger: $dispatched")
+        } finally {
+            KLogger.resetForTest()
+        }
+    }
+
+    @Test
+    fun `isEmpty ignores files that are not queue entries`() {
+        File(tempDir, "stale.logq.tmp").writeText("partial") // e.g. left behind by a crash mid-write
+        File(tempDir, "unrelated.txt").writeText("")
+
+        assertTrue(queue.isEmpty())
+    }
+
+    @Test
+    fun `a failed write leaves no temp file behind`() {
+        blockNextPersist(suffix = ".logq.tmp")
+        val tmpEntriesBefore = tempDir.list()!!.count { it.endsWith(".tmp") }
+
+        runCatching { queue.enqueue(KLogger.Level.INFO, "tag", "msg") }
+
+        // The blocking directory that was used as the temp path must have been cleaned up
+        assertEquals(tmpEntriesBefore - 1, tempDir.list()!!.count { it.endsWith(".tmp") })
+    }
+
+    @Test
+    fun `line breaks in the tag do not corrupt the entry format`() {
+        queue.enqueue(KLogger.Level.WARN, "line1\r\nline2", "msg")
+
+        val (level, tag, msg) = queue.read(queue.listFiles().single())
+
+        // The format is line-based (level / tag / message): a multi-line tag would shift the
+        // message into the tag and lose data
+        assertEquals(KLogger.Level.WARN, level)
+        assertEquals("line1 line2", tag)
+        assertEquals("msg", msg)
     }
 
     @Test

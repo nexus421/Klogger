@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.github.nexus421"
-version = "0.1.0"
+version = "0.2.0"
 val globalVersion = version.toString()
 repositories {
     mavenCentral()
@@ -13,7 +13,8 @@ repositories {
 
 dependencies {
     testImplementation(kotlin("test"))
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    // api, not implementation: CoroutineScope is part of the public API (logToLoki, HttpLogAppender, LokiAppender.scope)
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 }
 

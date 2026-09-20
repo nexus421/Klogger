@@ -19,7 +19,7 @@ A lightweight Kotlin logging utility with a clean DSL, multiple destinations, an
 **Gradle (Kotlin DSL):**
 ```kotlin
 dependencies {
-    implementation("bayern.kickner:Klogger:0.1.0")
+    implementation("bayern.kickner:Klogger:0.2.0")
 }
 
 repositories {
@@ -34,7 +34,7 @@ repositories {
 **Gradle (Groovy):**
 ```groovy
 dependencies {
-    implementation "bayern.kickner:Klogger:0.1.0"
+    implementation "bayern.kickner:Klogger:0.2.0"
 }
 
 repositories {
@@ -233,7 +233,8 @@ dd.MM.yyyy HH:mm:ss LEVEL/TAG: message
 - A warning is printed to `stderr` once if logging is used before `configure()` is called.
 - `configure()` **accumulates** destinations across calls; it does not reset existing ones.
 - The Loki appender requires `kotlinx-coroutines-core` and `kotlinx-serialization-json` (both are transitive
-  dependencies of this library).
+  dependencies of this library). `kotlinx-coroutines-core` is exposed as an `api` dependency, so `CoroutineScope`
+  (e.g. `LokiAppender.scope.cancel()`) is available in your code without declaring it yourself.
 
 ## License
 WTFPL

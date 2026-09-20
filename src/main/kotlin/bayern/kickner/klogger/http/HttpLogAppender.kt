@@ -1,7 +1,8 @@
 package bayern.kickner.klogger.http
 
+import bayern.kickner.klogger.Destination
+import bayern.kickner.klogger.LambdaDestination
 import bayern.kickner.klogger.LoggerDsl
-import bayern.kickner.klogger.errorLog
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -95,6 +96,14 @@ class HttpLogAppender(
     private val channel = Channel<LogEntry>(maxQueueSize, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val lastTimestampNs = AtomicLong(0L)
 
+    @Volatile
+    private var flushJob: Job? = null
+
+    /** The one destination instance representing this appender; registered by [logToHttp]. */
+    internal val destination: Destination = LambdaDestination { level, tag, message ->
+        enqueue(level.name, tag, message)
+    }
+
     // ── Header helpers ────────────────────────────────────────────────────────
 
     /** Adds (or overwrites) a request header. */
@@ -119,13 +128,18 @@ class HttpLogAppender(
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
-    internal fun start() {
-        scope.launch(Dispatchers.IO) {
+    /** Launches the flush loop; returns false (and does nothing) if it is already running. */
+    internal fun start(): Boolean {
+        if (flushJob?.isActive == true) return false
+        flushJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(this@HttpLogAppender.flushInterval)
-                flush()
+                // Anything escaping flush() would end this coroutine and silently stop all
+                // forwarding for the rest of the JVM's lifetime - report it and keep looping.
+                runCatching { flush() }.onFailure { System.err.println("HttpLogAppender: flush failed – $it") }
             }
         }
+        return true
     }
 
     internal fun enqueue(level: String, tag: String, message: String) {
@@ -134,7 +148,7 @@ class HttpLogAppender(
         channel.trySend(LogEntry(tsNs, level, tag, message))
     }
 
-    private fun flush() {
+    internal fun flush() {
         val currentBatchMaxSize = batchMaxSize
         val batch = ArrayList<LogEntry>(currentBatchMaxSize)
         for (i in 0 until currentBatchMaxSize) {
@@ -142,9 +156,11 @@ class HttpLogAppender(
         }
         if (batch.isEmpty()) return
 
-        // Build body before opening the connection – fail fast without wasting a socket
+        // Build body before opening the connection – fail fast without wasting a socket.
+        // Failures below go to stderr, never through KLogger: this appender is itself a KLogger
+        // destination, so logging them would feed the error back into this very buffer.
         val bodyBytes = runCatching { bodyBuilder(batch).toByteArray(Charsets.UTF_8) }.getOrElse {
-            errorLog("HttpLogAppender: bodyBuilder failed – ${it.message}")
+            System.err.println("HttpLogAppender: bodyBuilder failed – ${it.message}")
             return
         }
 
@@ -162,10 +178,10 @@ class HttpLogAppender(
                 conn.inputStream.use { it.readBytes() }
             } else {
                 conn.errorStream?.use { it.readBytes() }
-                errorLog("HttpLogAppender: HTTP $responseCode")
+                System.err.println("HttpLogAppender: HTTP $responseCode")
             }
         }.onFailure {
-            errorLog("HttpLogAppender: send failed – ${it.message}")
+            System.err.println("HttpLogAppender: send failed – ${it.message}")
         }
     }
 }
@@ -179,7 +195,5 @@ class HttpLogAppender(
  */
 fun LoggerDsl.logToHttp(appender: HttpLogAppender) {
     appender.start()
-    logToCustom { level, tag, message ->
-        appender.enqueue(level.name, tag, message)
-    }
+    logTo(appender.destination)
 }
