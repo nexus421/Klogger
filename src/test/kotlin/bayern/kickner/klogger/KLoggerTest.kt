@@ -4,6 +4,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class KLoggerTest {
 
@@ -137,5 +138,23 @@ class KLoggerTest {
         }
 
         assertFalse(evaluated, "Message lambda must not be evaluated for filtered levels")
+    }
+
+    @Test
+    fun `formatLogDefault produces expected format`() {
+        val formatted = KLogger.formatLogDefault(KLogger.Level.INFO, "MyTag", "Custom test message")
+        val regex = Regex("""^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2} INFO/MyTag: Custom test message$""")
+        assertTrue(regex.matches(formatted), "Formatted log did not match expected pattern: $formatted")
+    }
+
+    @Test
+    fun `warning is printed to stderr once when logging before configure is called`() {
+        val stderr = captureStderr {
+            KLogger.info("tag") { "first" }
+            KLogger.info("tag") { "second" }
+        }
+
+        val occurrences = Regex("No destinations configured").findAll(stderr).count()
+        assertEquals(1, occurrences, "Warning should be printed exactly once")
     }
 }

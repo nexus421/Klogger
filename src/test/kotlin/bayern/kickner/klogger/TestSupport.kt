@@ -12,6 +12,7 @@ class TestHttpServer : AutoCloseable {
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
 
     val bodies = CopyOnWriteArrayList<String>()
+    val requestHeaders = CopyOnWriteArrayList<Map<String, List<String>>>()
 
     @Volatile
     var status = 200
@@ -19,6 +20,7 @@ class TestHttpServer : AutoCloseable {
     init {
         server.createContext("/") { exchange ->
             bodies.add(exchange.requestBody.readBytes().toString(Charsets.UTF_8))
+            requestHeaders.add(exchange.requestHeaders.toMap())
             exchange.sendResponseHeaders(status, -1)
             exchange.close()
         }

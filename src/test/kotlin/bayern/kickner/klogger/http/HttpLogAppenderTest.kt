@@ -134,4 +134,68 @@ class HttpLogAppenderTest {
         assertTrue(appender.start(), "first start should launch the loop")
         assertFalse(appender.start(), "second start must not launch a second loop")
     }
+
+    @Test
+    fun `headers including Bearer and BasicAuth and Content-Type are sent correctly`() {
+        val appender = appender().apply {
+            addBearer("my-secret-token")
+            addContentTypeApplicationJson()
+            addHeader("X-Custom-Header", "custom-value")
+        }
+        KLogger.configure { logToHttp(appender) }
+
+        KLogger.info("tag") { "with-headers" }
+        appender.flush()
+
+        server.awaitRequests(1)
+        val headers = server.requestHeaders.single()
+
+        val auth = headers["Authorization"]?.firstOrNull() ?: headers["authorization"]?.firstOrNull()
+        val contentType = headers["Content-type"]?.firstOrNull() ?: headers["Content-Type"]?.firstOrNull()
+        val custom = headers["X-custom-header"]?.firstOrNull() ?: headers["X-Custom-Header"]?.firstOrNull()
+
+        assertEquals("Bearer my-secret-token", auth)
+        assertEquals("application/json", contentType)
+        assertEquals("custom-value", custom)
+    }
+
+    @Test
+    fun `basic auth header is correctly base64 encoded`() {
+        val appender = appender().apply {
+            addBasicAuth("user", "pass")
+        }
+        KLogger.configure { logToHttp(appender) }
+
+        KLogger.info("tag") { "basic-auth-test" }
+        appender.flush()
+
+        server.awaitRequests(1)
+        val headers = server.requestHeaders.single()
+        val auth = headers["Authorization"]?.firstOrNull() ?: headers["authorization"]?.firstOrNull()
+
+        // "user:pass" in base64 is "dXNlcjpwYXNz"
+        assertEquals("Basic dXNlcjpwYXNz", auth)
+    }
+
+    @Test
+    fun `buffer drops oldest entries on overflow`() {
+        val customScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val smallAppender = HttpLogAppender(
+            url = server.url,
+            bodyBuilder = { batch -> batch.joinToString(",") { it.message } },
+            maxQueueSize = 3,
+            initialFlushInterval = 1.hours,
+            initialScope = customScope,
+        )
+        KLogger.configure { logToHttp(smallAppender) }
+
+        // Send 5 entries
+        repeat(5) { i -> KLogger.info("tag") { "msg$i" } }
+
+        smallAppender.flush()
+        customScope.cancel()
+
+        val body = server.awaitRequests(1).single()
+        assertEquals("msg2,msg3,msg4", body)
+    }
 }
