@@ -2,10 +2,31 @@
 
 [![Tests](https://github.com/nexus421/Klogger/actions/workflows/tests.yml/badge.svg)](https://github.com/nexus421/Klogger/actions/workflows/tests.yml)
 
-A lightweight Kotlin logging utility with a clean DSL, multiple destinations, and an optional Loki appender.
+A lightweight, resilient Kotlin logging library designed for clean decoupling: write your log statements once across
+your codebase, and configure, add, or swap log destinations centrally at any time—without modifying a single log call.
+
+## Why Klogger?
+
+Logging requirements inevitably evolve: local development relies on the console, production servers often write to
+rolling files, and distributed systems stream logs to aggregators like Grafana Loki.
+
+**Klogger** is built to make logging **stable, predictable, and painless to maintain**:
+
+- **Centralized & Swappable Destinations**: Decouple log invocation from log shipping. Define where logs go in a single
+  `KLogger.configure { ... }` block. Need to switch from console to files or Loki, or dispatch to multiple sinks
+  simultaneously? Change one line of configuration—never refactor the `debugLog` or `infoLog` calls spread throughout
+  your classes.
+- **Rock-Solid Stability**: A logging failure must never take down your service. Klogger isolates destination errors
+  with safe exception handling so a failing target won't affect application logic. For unreliable networks, the built-in
+  cached forwarding mechanism queues entries to disk and flushes them once the remote sink recovers.
+- **Zero-Allocation Filtering**: Message lambdas are evaluated lazily. If a message is filtered out by `minLevel`, no
+  strings are constructed and no unnecessary memory is allocated.
+- **Idiomatic Kotlin**: Lightweight DSL, class-aware extension helpers (`debugLog`, `infoLog`, `errorLog`), and
+  coroutine-friendly asynchronous appenders.
 
 ## Table of contents
 
+- [Why Klogger?](#why-klogger)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [API overview](#api-overview)
