@@ -1,9 +1,6 @@
 package bayern.kickner.klogger
 
-import kotlin.test.BeforeTest
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
+import kotlin.test.*
 
 class KLoggerTest {
 
@@ -41,6 +38,17 @@ class KLoggerTest {
         KLogger.info("tag") { "info" }
 
         assertEquals(listOf("debug", "info"), received)
+    }
+
+    @Test
+    fun `isEnabled honours minLevel and debug`() {
+        KLogger.configure { minLevel = KLogger.Level.WARN }
+        assertFalse(KLogger.isEnabled(KLogger.Level.INFO))
+        assertTrue(KLogger.isEnabled(KLogger.Level.WARN))
+        assertTrue(KLogger.isEnabled(KLogger.Level.CRASH))
+
+        KLogger.configure { debug = true }
+        assertTrue(KLogger.isEnabled(KLogger.Level.DEBUG))
     }
 
     @Test

@@ -22,6 +22,9 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * Tag handling: by default the simple class name is used as TAG (see DEFAULT_LOG_TAG).
  * You can pass your own tag by calling Logger methods directly.
+ *
+ * SLF4J: if anything in the application logs via SLF4J 2.x (for example Ktor), Klogger takes over that output
+ * automatically and writes it to the configured destinations. See [bayern.kickner.klogger.slf4j.slf4jBridge].
  */
 object KLogger {
     /**
@@ -37,9 +40,10 @@ object KLogger {
 
     /**
      * Runtime configuration of the logger.
-     * - destinations: thread-safe list of destinations (CopyOnWriteArrayList for concurrent access)
-     * - debug: if true, bypasses minLevel filtering
-     * - minLevel: only messages >= this level will be processed (unless debug is true)
+     *
+     * @property destinations Thread-safe list of destinations (CopyOnWriteArrayList for concurrent access).
+     * @property debug If true, minLevel filtering is bypassed.
+     * @property minLevel Only messages >= this level are processed, unless debug is true.
      */
     internal data class Config(
         val destinations: MutableList<Destination> = CopyOnWriteArrayList(),
@@ -87,6 +91,16 @@ object KLogger {
     /** Log a CRASH message (like ERROR, but separate level). */
     fun crash(tag: String, msg: () -> String) = log(Level.CRASH, tag, msg)
 
+    /**
+     * Returns true if a message of [level] would currently be dispatched, honouring [LoggerDsl.minLevel]
+     * and [LoggerDsl.debug]. The SLF4J bridge uses it to answer `isDebugEnabled()` and friends correctly,
+     * so callers that guard expensive log statements skip them entirely.
+     */
+    fun isEnabled(level: Level): Boolean {
+        val cfg = config
+        return cfg.debug || level.ordinal >= cfg.minLevel.ordinal
+    }
+
     @Volatile
     private var checkIfLoggingIsConfigured = false
 
@@ -95,7 +109,7 @@ object KLogger {
      * Errors in destinations are caught so logging never interferes with the app.
      */
     private fun log(level: Level, tag: String, msg: () -> String) {
-        if (config.debug.not() && level.ordinal < config.minLevel.ordinal) return
+        if (isEnabled(level).not()) return
         val message = msg()
         // Prints a hint one time if logging is used but not configured.
         if (!checkIfLoggingIsConfigured && config.destinations.isEmpty()) {

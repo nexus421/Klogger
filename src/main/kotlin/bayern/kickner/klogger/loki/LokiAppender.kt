@@ -28,7 +28,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * When the buffer is full, [BufferOverflow.DROP_OLDEST] kicks in automatically.
  * A background coroutine flushes the channel periodically and sends up to
  * [batchMaxSize] entries as a single HTTP POST to Loki.
- * On Loki failure, errors are reported on stderr – the application continues unaffected.
+ * On Loki failure, errors are reported on stderr and the application continues unaffected.
  *
  * ## Configuration
  * All parameters ([maxQueueSize], [flushInterval], [batchMaxSize]) are set via [logToLoki]
@@ -38,7 +38,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * ## Timestamp collisions
  * If two log entries arrive within the same millisecond, they would receive the same
  * nanosecond timestamp (Loki requires uniqueness per stream). [lastTimestampNs] is therefore
- * an [AtomicLong] that is always set to `max(now, last + 1)` – timestamps are strictly
+ * an [AtomicLong] that is always set to `max(now, last + 1)`. Timestamps are therefore strictly
  * monotonically increasing and collision-free.
  *
  * ## Dynamic context
@@ -127,7 +127,7 @@ object LokiAppender {
     @Volatile
     private var flushJob: Job? = null
 
-    /** The one destination instance representing this appender; registered by [logToLoki]. */
+    /** The one destination instance representing this appender. Registered by [logToLoki]. */
     internal val destination: Destination = LambdaDestination { level, tag, message ->
         enqueue(level.name, tag, message)
     }
@@ -140,7 +140,7 @@ object LokiAppender {
      * @param lokiBaseUrl Base URL without path, e.g. `"http://loki:3100"`
      * @param appName Value of the `app` label in Loki
      * @param token Bearer token for the `Authorization: Bearer` header
-     * @param maxQueueSize Maximum buffer size; oldest entry is dropped on overflow
+     * @param maxQueueSize Maximum buffer size. The oldest entry is dropped on overflow.
      * @param flushInterval Interval between two flush runs
      * @param batchMaxSize Maximum number of entries per HTTP request
      * @param scope Scope for the flush loop (blocking HTTP calls run on [Dispatchers.IO])
@@ -259,7 +259,7 @@ object LokiAppender {
  * @param appName Label value for the `"app"` key in Loki
  * @param bearerToken Bearer token for the `Authorization: Bearer` header (e.g. Grafana Cloud)
  * @param contextFields Arbitrary key-value pairs embedded into every log line
- * @param maxQueueSize Maximum buffer size; oldest entry is dropped on overflow (default: 500)
+ * @param maxQueueSize Maximum buffer size. The oldest entry is dropped on overflow (default: 500).
  * @param flushInterval Interval between two flush runs (default: 1000 ms)
  * @param batchMaxSize Maximum number of entries per HTTP request to Loki (default: 50)
  * @param scope CoroutineScope for the flush loop. Defaults to an internal app-lifetime scope with

@@ -83,6 +83,19 @@ subpackages.
   adding a new `bodyBuilder`) over hardcoding a new backend-specific format, unless the backend needs Loki-specific
   stream/label semantics.
 
+- **`slf4j/`** — SLF4J 2.x bridge inside the core artifact. `slf4j-api` is `compileOnly`, so Klogger never pulls SLF4J
+  in; `KloggerServiceProvider` is registered via
+  `src/main/resources/META-INF/services/org.slf4j.spi.SLF4JServiceProvider`
+  and only loaded when the app already has SLF4J (e.g. via Ktor). Code outside the provider/logger classes (DSL, config,
+  `KLogger`) must never reference SLF4J types, otherwise apps without SLF4J break; `./gradlew testWithoutSlf4j` (part of
+  `check`) runs `*WithoutSlf4jTest` with slf4j-api removed from the classpath to guard this. `KloggerSlf4jLogger`
+  extends SLF4J's `AbstractLogger` and forwards `handleNormalizedLoggingCall` through `staticLog` (tag = abbreviated
+  logger name, TRACE always dropped, MDC appended when non-empty). Its settings (`Slf4jBridgeConfig`: own threshold +
+  logger-name prefix overrides) live in a `@Volatile` holder set via the `LoggerDsl.slf4jBridge {}` extension; each
+  logger caches its resolved threshold per config instance. A `ThreadLocal` guard drops SLF4J calls made from inside a
+  destination to prevent recursion. The provider creates its factories eagerly because SLF4J >= 2.0.17 calls
+  `getMDCAdapter()` before `initialize()`.
+
 ### Cross-cutting conventions
 
 - Every public config surface is a DSL block (`KLogger.configure { ... }`); avoid adding constructor parameters or

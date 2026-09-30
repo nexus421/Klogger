@@ -49,14 +49,8 @@ internal class ConsoleDestination : Destination {
  *
  * @param file The file to which log messages will be written.
  *
- * Behavior:
- * - Ensures the specified file and its parent directories are created if missing.
- * - Appends formatted log messages to the file.
- * - Implements thread-safe logging using the `@Synchronized` annotation on the log method.
- *
- * Methods:
- * - `log(level: Level, tag: String, message: String)`: Writes a formatted log message
- *   (with a timestamp, log level, and tag) to the file.
+ * The file and its parent directories are created if missing. [log] appends each message formatted with
+ * timestamp, level and tag. Writing is thread-safe via `@Synchronized`.
  */
 internal class FileDestination(private val file: File) : Destination {
     init {
@@ -103,7 +97,7 @@ internal class FileBackedLogQueue(private val dir: File, private val maxQueueSiz
         dir.mkdirs()
     }
 
-    /** True if no queue entry exists. Only `.logq` files count - never `.tmp` or unrelated files. */
+    /** True if no queue entry exists. Only `.logq` files count, never `.tmp` or unrelated files. */
     @Synchronized
     fun isEmpty(): Boolean = listFiles().isEmpty()
 

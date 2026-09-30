@@ -17,7 +17,7 @@ import kotlin.time.Duration.Companion.milliseconds
 /**
  * A single buffered log entry passed to the [HttpLogAppender.bodyBuilder].
  *
- * @param timestampNs Nanosecond timestamp; strictly monotonically increasing per appender instance.
+ * @param timestampNs Nanosecond timestamp, strictly monotonically increasing per appender instance.
  * @param level Log level name, e.g. `"INFO"`.
  * @param tag Logger tag (usually the simple class name).
  * @param message The log message.
@@ -59,7 +59,7 @@ data class LogEntry(
  * @param url Full target URL including path, e.g. `"https://logs.example.com/ingest"`.
  *            A trailing `/` is stripped automatically.
  * @param bodyBuilder Converts the current batch of [LogEntry] items into the raw request body string.
- *                    Called on the flush coroutine; must not throw (errors are caught and logged).
+ *                    Called on the flush coroutine. It must not throw (errors are caught and logged).
  * @param maxQueueSize In-memory buffer capacity (default 500). On overflow, the oldest entry is dropped.
  * @param initialFlushInterval Interval between flush runs (default 1 000 ms). Mutable via [flushInterval].
  * @param initialBatchMaxSize Max entries per HTTP request (default 50). Mutable via [batchMaxSize].
@@ -99,7 +99,7 @@ class HttpLogAppender(
     @Volatile
     private var flushJob: Job? = null
 
-    /** The one destination instance representing this appender; registered by [logToHttp]. */
+    /** The one destination instance representing this appender. Registered by [logToHttp]. */
     internal val destination: Destination = LambdaDestination { level, tag, message ->
         enqueue(level.name, tag, message)
     }
@@ -128,7 +128,7 @@ class HttpLogAppender(
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
-    /** Launches the flush loop; returns false (and does nothing) if it is already running. */
+    /** Launches the flush loop. Returns false (and does nothing) if it is already running. */
     internal fun start(): Boolean {
         if (flushJob?.isActive == true) return false
         flushJob = scope.launch(Dispatchers.IO) {
