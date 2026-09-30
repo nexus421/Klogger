@@ -43,7 +43,7 @@ Loki in production. Klogger keeps the log calls in your code independent of wher
 **Gradle (Kotlin DSL):**
 ```kotlin
 dependencies {
-    implementation("bayern.kickner:Klogger:0.2.0")
+  implementation("bayern.kickner:Klogger:0.3.0")
 }
 
 repositories {
