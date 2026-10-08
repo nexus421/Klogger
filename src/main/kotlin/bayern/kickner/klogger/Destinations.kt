@@ -1,9 +1,9 @@
 package bayern.kickner.klogger
 
 import bayern.kickner.klogger.KLogger.Level
-import bayern.kickner.klogger.KLogger.formatLogDefault
 import java.io.File
 import java.io.IOException
+import kotlin.time.Duration
 
 /**
  * Represents a logging destination where log messages can be written.
@@ -19,6 +19,18 @@ interface Destination {
      * Implementations must be thread-safe if they mutate shared state.
      */
     fun log(level: Level, tag: String, message: String)
+
+    /**
+     * Delivers everything this destination still buffers and should return within about [timeout];
+     * [KLogger.flush] enforces the hard limit.
+     *
+     * Called by [KLogger.flush], never on the logging hot path. Like [log], it must not throw.
+     * The default does nothing, which is correct for destinations that write synchronously.
+     *
+     * @return `true` if nothing is left to send (a stopped appender has nothing left to send), `false` if the time
+     *   ran out first.
+     */
+    fun flush(timeout: Duration): Boolean = true
 }
 
 /**
@@ -27,41 +39,105 @@ interface Destination {
  * Log messages with levels `ERROR` and `CRASH` are written to `System.err`,
  * while other levels are written to standard output (`System.out`).
  *
- * This class delegates message formatting to the `formatLogDefault` function.
+ * Lines are formatted with the configured [LoggerDsl.format] (default: [KLogger.formatLogDefault]).
  */
 internal class ConsoleDestination : Destination {
     override fun log(level: Level, tag: String, message: String) {
-        if (level == Level.ERROR || level == Level.CRASH) System.err.println(formatLogDefault(level, tag, message))
-        else println(formatLogDefault(level, tag, message))
+        if (level == Level.ERROR || level == Level.CRASH) System.err.println(KLogger.format(level, tag, message))
+        else println(KLogger.format(level, tag, message))
+    }
+
+    /** Flushes both streams, in case `System.out`/`System.err` were replaced by buffering streams. */
+    override fun flush(timeout: Duration): Boolean {
+        System.out.flush()
+        System.err.flush()
+        return true
     }
 }
 
 /**
- * A logging destination that writes log messages to a specified file.
+ * A logging destination that appends log lines, formatted with the configured [LoggerDsl.format], to [file],
+ * optionally with size-based rotation.
  *
- * This class is responsible for outputting log messages to a file. The file
- * and its parent directories are created if they do not already exist.
- * Log messages are appended to the file in a thread-safe manner.
+ * The file and its parent directories are created if missing; existing content is kept. Writing is
+ * thread-safe via `@Synchronized`. Several instances (or processes) writing the same file are not supported.
  *
- * @constructor Initializes a new instance of the FileDestination class with the
- * specified file. If the file or its parent directories do not already
- * exist, they will be created.
+ * Rotation is off unless [maxFileSize] is set. Then, before a line would push the file beyond [maxFileSize]
+ * bytes, `app.log` is renamed to `app.log.1`, `app.log.1` to `app.log.2` and so on; the oldest backup beyond
+ * [maxBackupFiles] is deleted. A single line larger than [maxFileSize] is still written, into a fresh file.
+ * If rotation fails (e.g. the file is locked), lines keep being appended to [file] and the failure is
+ * reported once on stderr.
  *
  * @param file The file to which log messages will be written.
- *
- * The file and its parent directories are created if missing. [log] appends each message formatted with
- * timestamp, level and tag. Writing is thread-safe via `@Synchronized`.
+ * @param maxFileSize Rotate before the file would exceed this many bytes. `null` = never rotate. Must be > 0.
+ * @param maxBackupFiles Number of rotated files kept next to [file]. Must be >= 1.
  */
-internal class FileDestination(private val file: File) : Destination {
+internal class FileDestination(
+    private val file: File,
+    private val maxFileSize: Long? = null,
+    private val maxBackupFiles: Int = 3,
+) : Destination {
+    /** Bytes written since the last rotation attempt; starts at the size of an existing file. */
+    private var writtenBytes: Long
+    private var rotationFailureReported = false
+
     init {
+        require(maxFileSize == null || maxFileSize > 0) { "maxFileSize must be > 0, was $maxFileSize" }
+        require(maxBackupFiles >= 1) { "maxBackupFiles must be >= 1, was $maxBackupFiles" }
         file.parentFile?.mkdirs()
         if (file.exists().not()) file.createNewFile()
+        writtenBytes = file.length()
     }
 
     @Synchronized
     override fun log(level: Level, tag: String, message: String) {
-        file.appendText(formatLogDefault(level, tag, message) + System.lineSeparator())
+        val bytes = (KLogger.format(level, tag, message) + System.lineSeparator()).toByteArray(Charsets.UTF_8)
+        // writtenBytes > 0: a single line larger than maxFileSize is still written, into a fresh file
+        if (maxFileSize != null && writtenBytes > 0 && writtenBytes + bytes.size > maxFileSize) rotate()
+        file.appendBytes(bytes)
+        writtenBytes += bytes.size
     }
+
+    /** app.log -> app.log.1 -> app.log.2 ... up to [maxBackupFiles]; the oldest backup is deleted. */
+    private fun rotate() {
+        val rotated = runCatching {
+            // Only the existing backups app.log.1..n are touched (they are contiguous, the scan stops at the first
+            // gap), so the cost grows with the backups on disk, never with a large maxBackupFiles.
+            var existing = 0
+            while (existing < maxBackupFiles && backup(existing + 1).exists()) existing++
+            // Stop at the first failed step: carrying on would rename a file onto a backup that could not
+            // be moved away, which replaces that backup and silently loses its lines.
+            if (existing == maxBackupFiles) {
+                if (!backup(existing).delete()) return@runCatching false
+                existing--
+            }
+            for (i in existing downTo 1) {
+                if (!backup(i).renameTo(backup(i + 1))) return@runCatching false
+            }
+            file.renameTo(backup(1))
+        }.getOrDefault(false)
+        // On failure keep appending to the current file and retry after another maxFileSize bytes instead of
+        // on every single line. Reported on stderr, never through KLogger: we are a destination ourselves.
+        if (!rotated && !rotationFailureReported) {
+            System.err.println("FileDestination: could not rotate $file, continuing without rotation")
+            rotationFailureReported = true
+        }
+        writtenBytes = 0
+    }
+
+    private fun backup(index: Int) = File(file.path + "." + index)
+}
+
+/**
+ * Passes only messages at or above [minLevel] on to [delegate]; used for the `minLevel` parameter of the
+ * `logTo*` functions. Applied after the global [LoggerDsl.minLevel] and also when [LoggerDsl.debug] is true.
+ */
+internal class LevelFilterDestination(private val minLevel: Level, private val delegate: Destination) : Destination {
+    override fun log(level: Level, tag: String, message: String) {
+        if (level >= minLevel) delegate.log(level, tag, message)
+    }
+
+    override fun flush(timeout: Duration): Boolean = delegate.flush(timeout)
 }
 
 /**

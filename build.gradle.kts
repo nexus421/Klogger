@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.github.nexus421"
-version = "0.3.0"
+version = "0.4.0"
 val globalVersion = version.toString()
 repositories {
     mavenCentral()

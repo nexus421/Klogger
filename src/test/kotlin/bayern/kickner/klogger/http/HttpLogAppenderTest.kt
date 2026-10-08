@@ -5,9 +5,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import java.net.ServerSocket
+import kotlin.concurrent.thread
 import kotlin.test.*
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.measureTime
 
 class HttpLogAppenderTest {
 
@@ -133,5 +137,64 @@ class HttpLogAppenderTest {
 
         assertTrue(appender.start(), "first start should launch the loop")
         assertFalse(appender.start(), "second start must not launch a second loop")
+    }
+
+    @Test
+    fun `drain against a server that never answers returns within its timeout`() {
+        ServerSocket(0).use { blackhole ->
+            // Accepts connections but never answers: without the remaining-time based socket timeouts
+            // a single request would wait the full 3 s read timeout.
+            thread(isDaemon = true) { runCatching { while (true) blackhole.accept() } }
+            val appender = appender(url = "http://127.0.0.1:${blackhole.localPort}")
+            KLogger.configure { logToHttp(appender) }
+            KLogger.info("tag") { "payload" }
+
+            val took = measureTime { captureStderr { appender.drain(500.milliseconds) } }
+
+            assertTrue(took < 2.5.seconds, "drain took $took")
+        }
+    }
+
+    @Test
+    fun `drain reports complete at an empty buffer`() {
+        val appender = appender()
+        KLogger.configure { logToHttp(appender) }
+
+        assertTrue(appender.drain(1.seconds))
+
+        assertEquals(0, server.bodies.size)
+    }
+
+    @Test
+    fun `drain reports complete when the last batch is exactly full`() {
+        val appender = appender().apply { batchMaxSize = 2 }
+        KLogger.configure { logToHttp(appender) }
+        repeat(4) { i -> KLogger.info("tag") { "m$i" } }
+
+        assertTrue(appender.drain(3.seconds))
+
+        assertEquals(listOf("m0\nm1", "m2\nm3"), server.bodies.toList())
+    }
+
+    @Test
+    fun `drain reports incomplete when its time runs out with batches left`() {
+        server.responseDelayMs = 120
+        val appender = appender().apply { batchMaxSize = 1 }
+        KLogger.configure { logToHttp(appender) }
+        repeat(10) { i -> KLogger.info("tag") { "m$i" } }
+
+        assertFalse(appender.drain(300.milliseconds))
+    }
+
+    @Test
+    fun `flush sends nothing once the appender was stopped via its scope`() {
+        val appender = appender()
+        KLogger.configure { logToHttp(appender) }
+        scope.cancel() // the documented way to stop sending
+
+        KLogger.info("tag") { "after stop" }
+
+        assertTrue(KLogger.flush(1.seconds))
+        assertEquals(0, server.bodies.size)
     }
 }
