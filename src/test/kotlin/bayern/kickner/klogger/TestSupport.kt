@@ -3,6 +3,7 @@ package bayern.kickner.klogger
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Minimal HTTP endpoint for appender tests: records every request body and answers with [status].
@@ -16,9 +17,18 @@ class TestHttpServer : AutoCloseable {
     @Volatile
     var status = 200
 
+    /** Delay between receiving a request and answering it, to simulate a slow backend. */
+    @Volatile
+    var responseDelayMs = 0L
+
+    /** Number of requests that have been answered (counted after [responseDelayMs], before the response). */
+    val completed = AtomicInteger()
+
     init {
         server.createContext("/") { exchange ->
             bodies.add(exchange.requestBody.readBytes().toString(Charsets.UTF_8))
+            if (responseDelayMs > 0) Thread.sleep(responseDelayMs)
+            completed.incrementAndGet()
             exchange.sendResponseHeaders(status, -1)
             exchange.close()
         }
@@ -51,6 +61,19 @@ fun captureStderr(block: () -> Unit): String {
         block()
     } finally {
         System.setErr(original)
+    }
+    return buffer.toString()
+}
+
+/** Runs [block] with `System.out` redirected and returns everything it printed. */
+fun captureStdout(block: () -> Unit): String {
+    val original = System.out
+    val buffer = java.io.ByteArrayOutputStream()
+    System.setOut(java.io.PrintStream(buffer, true))
+    try {
+        block()
+    } finally {
+        System.setOut(original)
     }
     return buffer.toString()
 }

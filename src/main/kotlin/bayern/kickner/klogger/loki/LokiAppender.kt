@@ -1,11 +1,12 @@
 package bayern.kickner.klogger.loki
 
 import bayern.kickner.klogger.Destination
-import bayern.kickner.klogger.LambdaDestination
+import bayern.kickner.klogger.KLogger
 import bayern.kickner.klogger.LoggerDsl
 import bayern.kickner.klogger.loki.LokiAppender.batchMaxSize
 import bayern.kickner.klogger.loki.LokiAppender.flushInterval
 import bayern.kickner.klogger.loki.LokiAppender.lastTimestampNs
+import bayern.kickner.klogger.loki.LokiAppender.sendLock
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -16,9 +17,13 @@ import kotlinx.serialization.json.put
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 /**
  * Buffers log entries in a [Channel] and sends them in batches to Loki.
@@ -29,6 +34,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * A background coroutine flushes the channel periodically and sends up to
  * [batchMaxSize] entries as a single HTTP POST to Loki.
  * On Loki failure, errors are reported on stderr and the application continues unaffected.
+ * [KLogger.flush] sends everything still buffered right away, e.g. before the process exits.
  *
  * ## Configuration
  * All parameters ([maxQueueSize], [flushInterval], [batchMaxSize]) are set via [logToLoki]
@@ -127,9 +133,28 @@ object LokiAppender {
     @Volatile
     private var flushJob: Job? = null
 
+    /**
+     * Serializes sending between the flush loop and [drain], so a drain waits for a batch the loop has in
+     * flight instead of racing past it (which could lose that batch on JVM exit), and batches leave in order.
+     * It guards network I/O, not state: [enqueue] never takes it, so logging stays lock-free.
+     */
+    private val sendLock = ReentrantLock()
+
+    /**
+     * Per-destination threshold, set by [logToLoki]. `null` = everything the global minLevel lets through.
+     * A field instead of a wrapping destination, so the stable [destination] instance keeps deduplicating.
+     */
+    @Volatile
+    private var minLevel: KLogger.Level? = null
+
     /** The one destination instance representing this appender. Registered by [logToLoki]. */
-    internal val destination: Destination = LambdaDestination { level, tag, message ->
-        enqueue(level.name, tag, message)
+    internal val destination: Destination = object : Destination {
+        override fun log(level: KLogger.Level, tag: String, message: String) {
+            val min = minLevel
+            if (min == null || level >= min) enqueue(level.name, tag, message)
+        }
+
+        override fun flush(timeout: Duration) = drain(timeout)
     }
 
     /**
@@ -144,6 +169,7 @@ object LokiAppender {
      * @param flushInterval Interval between two flush runs
      * @param batchMaxSize Maximum number of entries per HTTP request
      * @param scope Scope for the flush loop (blocking HTTP calls run on [Dispatchers.IO])
+     * @param minLevel Per-destination threshold, `null` = no extra filter
      */
     internal fun start(
         lokiBaseUrl: String,
@@ -152,8 +178,10 @@ object LokiAppender {
         maxQueueSize: Int,
         flushInterval: Duration,
         batchMaxSize: Int,
-        scope: CoroutineScope
+        scope: CoroutineScope,
+        minLevel: KLogger.Level? = null,
     ) {
+        this.minLevel = minLevel
         pushUrl = URI("${lokiBaseUrl.trimEnd('/')}/loki/api/v1/push").toURL()
         streamLabels = mapOf("app" to appName)
         bearerToken = token
@@ -199,13 +227,55 @@ object LokiAppender {
      * Errors are reported on stderr, never thrown.
      */
     internal fun flush() {
-        val currentBatchMaxSize = batchMaxSize
+        sendLock.withLock { sendBatch(timeoutMs = DEFAULT_TIMEOUT_MS) }
+    }
+
+    /**
+     * Sends batches until the buffer is empty or [timeout] is used up, waiting first for a batch the
+     * flush loop may have in flight. Called through [KLogger.flush].
+     *
+     * Sends nothing once the flush loop was stopped via `scope.cancel()`, the documented way to stop sending.
+     *
+     * @return `true` if the buffer was emptied (or the appender is stopped), `false` if the time ran out first.
+     */
+    internal fun drain(timeout: Duration): Boolean {
+        if (flushJob?.isActive != true) return true
+        val deadline = TimeSource.Monotonic.markNow() + timeout
+        if (!sendLock.tryLock(timeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)) return false
+        try {
+            while (true) {
+                val remainingMs = (-deadline.elapsedNow()).inWholeMilliseconds
+                // Checked before use: HttpURLConnection treats a timeout of 0 as "wait forever"
+                if (remainingMs <= 0) return false
+                val maxEntries = batchMaxSize
+                val taken = sendBatch(timeoutMs = minOf(DEFAULT_TIMEOUT_MS.toLong(), remainingMs).toInt(), maxEntries)
+                // Fewer entries than requested: the buffer ran empty, everything is out
+                if (taken < maxEntries) return true
+                // Only possible with batchMaxSize <= 0, which never sends anything - don't spin until the deadline
+                if (taken == 0) return false
+            }
+        } finally {
+            sendLock.unlock()
+        }
+    }
+
+    /** Connect and read timeout of a regular send. A drain uses less if its deadline is closer. */
+    private const val DEFAULT_TIMEOUT_MS = 3000
+
+    /**
+     * Takes up to [maxEntries] entries and sends them as one request, using [timeoutMs] as connect and read
+     * timeout. Must be called while holding [sendLock].
+     *
+     * @return the number of entries taken from the buffer (they are gone even if sending failed).
+     */
+    private fun sendBatch(timeoutMs: Int, maxEntries: Int = batchMaxSize): Int {
+        val currentBatchMaxSize = maxEntries
         val batch = ArrayList<Entry>(currentBatchMaxSize)
         for (i in 0 until currentBatchMaxSize) {
             val entry = channel.tryReceive().getOrNull() ?: break
             batch.add(entry)
         }
-        if (batch.isEmpty()) return
+        if (batch.isEmpty()) return 0
 
         // Loki format: values = list of [timestamp_ns, log_line_as_json]
         val values = batch.map { entry ->
@@ -220,7 +290,7 @@ object LokiAppender {
         // Serialize and encode before opening the connection – fail fast without wasting a socket
         val bodyBytes =
             Json.encodeToString(LokiBody(listOf(LokiStream(streamLabels, values)))).toByteArray(Charsets.UTF_8)
-        val currentUrl = pushUrl ?: return
+        val currentUrl = pushUrl ?: return batch.size
 
         runCatching {
             val conn = currentUrl.openConnection() as HttpURLConnection
@@ -228,8 +298,8 @@ object LokiAppender {
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("Authorization", "Bearer $bearerToken")
-            conn.connectTimeout = 3000
-            conn.readTimeout = 3000
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
             conn.outputStream.use { it.write(bodyBytes) }
             val responseCode = conn.responseCode
             // Consume the response body so the JVM can reuse the TCP connection (HTTP keep-alive)
@@ -246,6 +316,7 @@ object LokiAppender {
             // Loki unreachable → drop the batch, application keeps running
             System.err.println("LokiAppender: send failed – ${it.message}")
         }
+        return batch.size
     }
 }
 
@@ -266,6 +337,9 @@ object LokiAppender {
  *             a [SupervisorJob]. Pass a custom scope if you need explicit lifecycle control.
  *             The active scope is stored in [LokiAppender.scope] and can be cancelled if needed.
  *             Calling [logToLoki] again cancels the previous flush loop and replaces the scope.
+ * @param minLevel Only messages at or above this level are sent to Loki, on top of the global
+ *             [LoggerDsl.minLevel] and also when [LoggerDsl.debug] is true. `null` (default) = no extra filter.
+ *             Like all other settings here, calling [logToLoki] again replaces it.
  */
 fun LoggerDsl.logToLoki(
     lokiBaseUrl: String,
@@ -275,9 +349,10 @@ fun LoggerDsl.logToLoki(
     maxQueueSize: Int = 500,
     flushInterval: Duration = 1000.milliseconds,
     batchMaxSize: Int = 50,
-    scope: CoroutineScope = LokiAppender.scope
+    scope: CoroutineScope = LokiAppender.scope,
+    minLevel: KLogger.Level? = null,
 ) {
     LokiAppender.contextFields = contextFields
-    LokiAppender.start(lokiBaseUrl, appName, bearerToken, maxQueueSize, flushInterval, batchMaxSize, scope)
+    LokiAppender.start(lokiBaseUrl, appName, bearerToken, maxQueueSize, flushInterval, batchMaxSize, scope, minLevel)
     logTo(LokiAppender.destination)
 }

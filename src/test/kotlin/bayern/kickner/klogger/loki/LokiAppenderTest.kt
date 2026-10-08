@@ -9,6 +9,7 @@ import kotlin.test.*
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 class LokiAppenderTest {
 
@@ -113,5 +114,28 @@ class LokiAppenderTest {
 
         val body = server.awaitRequests(1).single()
         assertEquals(1, Regex("once").findAll(body).count(), "log line was delivered more than once: $body")
+    }
+
+    @Test
+    fun `KLogger flush drains all Loki batches in order`() {
+        configureLoki()
+        repeat(120) { i -> KLogger.info("tag") { "m$i" } }
+
+        assertTrue(KLogger.flush(3.seconds))
+
+        assertEquals(3, server.bodies.size)
+        val messages = server.bodies.flatMap { body -> Regex("m\\d+").findAll(body).map { it.value }.toList() }
+        assertEquals((0 until 120).map { "m$it" }, messages)
+    }
+
+    @Test
+    fun `KLogger flush sends nothing once Loki was stopped via its scope`() {
+        configureLoki()
+        scope.cancel() // the documented way to stop sending
+
+        KLogger.info("tag") { "after stop" }
+
+        assertTrue(KLogger.flush(1.seconds))
+        assertEquals(0, server.bodies.size)
     }
 }
