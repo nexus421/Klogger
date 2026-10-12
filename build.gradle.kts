@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.github.nexus421"
-version = "0.4.0"
+version = "0.5.0"
 val globalVersion = version.toString()
 repositories {
     mavenCentral()
@@ -20,6 +20,8 @@ dependencies {
     // Klogger itself never pulls SLF4J in.
     compileOnly("org.slf4j:slf4j-api:2.0.17")
     testImplementation("org.slf4j:slf4j-api:2.0.17")
+    // MDCContext for the coroutine MDC tests; same version as kotlinx-coroutines-core
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-slf4j:1.10.2")
 }
 
 tasks.test {
@@ -27,13 +29,17 @@ tasks.test {
     filter { excludeTestsMatching("*WithoutSlf4jTest") }
 }
 
-// Proves that Klogger, including slf4jBridge {}, works for apps that have no SLF4J on the classpath.
+// Proves that Klogger, including slf4jBridge {} and the MDC support, works for apps that have no SLF4J on the classpath.
+// JUnit still scans every test class here: no test class may have an SLF4J type in a method signature.
 val testWithoutSlf4j by tasks.registering(Test::class) {
-    description = "Runs *WithoutSlf4jTest with slf4j-api removed from the runtime classpath."
+    description =
+        "Runs *WithoutSlf4jTest with slf4j-api and kotlinx-coroutines-slf4j removed from the runtime classpath."
     group = "verification"
     useJUnitPlatform()
     testClassesDirs = sourceSets.test.get().output.classesDirs
-    classpath = sourceSets.test.get().runtimeClasspath.filter { !it.name.startsWith("slf4j-api") }
+    classpath = sourceSets.test.get().runtimeClasspath.filter {
+        !it.name.startsWith("slf4j-") && !it.name.startsWith("kotlinx-coroutines-slf4j")
+    }
     filter { includeTestsMatching("*WithoutSlf4jTest") }
 }
 

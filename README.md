@@ -35,11 +35,13 @@ Loki in production. Klogger keeps the log calls in your code independent of wher
 - [File rotation](#file-rotation)
 - [Per-destination level](#per-destination-level)
 - [SLF4J bridge](#slf4j-bridge)
+- [MDC / request context](#mdc--request-context)
 - [Examples](#examples)
 - [Formatting](#formatting)
 - [Thread-safety](#thread-safety)
 - [Limitations](#limitations)
 - [Notes](#notes)
+- [Changes in 0.5.0](#changes-in-050)
 - [Upgrading to 0.4.0](#upgrading-to-040)
 - [License](#license)
 
@@ -48,7 +50,7 @@ Loki in production. Klogger keeps the log calls in your code independent of wher
 **Gradle (Kotlin DSL):**
 ```kotlin
 dependencies {
-    implementation("bayern.kickner:Klogger:0.4.0")
+    implementation("bayern.kickner:Klogger:0.5.0")
 }
 
 repositories {
@@ -63,7 +65,7 @@ repositories {
 **Gradle (Groovy):**
 ```groovy
 dependencies {
-    implementation "bayern.kickner:Klogger:0.4.0"
+    implementation "bayern.kickner:Klogger:0.5.0"
 }
 
 repositories {
@@ -104,7 +106,7 @@ fun main() {
 Configure destinations and flags via DSL. Existing destinations are preserved on subsequent calls.
 
 All `logTo*` functions accept an optional `minLevel` that applies to that destination only (see
-[per-destination level](#per-destination-level)). Every option is off unless you set it.
+[per-destination level](#per-destination-level)). Every option is off unless you set it, except `includeMdc`.
 
 | Method / property                                                                      | Description                                                                                                                                                       |
 |----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -121,6 +123,7 @@ All `logTo*` functions accept an optional `minLevel` that applies to that destin
 | `format(lineFormat)`                                                                   | Line format of console and file (see [Formatting](#formatting))                                                                                                   |
 | `flushOnShutdown`                                                                      | `null` (default) or a timeout: flush Loki/HTTP buffers in a JVM shutdown hook (see [Flushing and shutdown](#flushing-and-shutdown))                               |
 | `logUncaughtExceptions(flushTimeout = 2.seconds)`                                      | Log uncaught exceptions as CRASH and flush (see [Crash logging](#crash-logging))                                                                                  |
+| `includeMdc`                                                                           | `true` (default): add the SLF4J MDC to every line (see [MDC / request context](#mdc--request-context))                                                            |
 
 Outside the DSL, `KLogger.flush(timeout = 3.seconds)` sends everything the Loki/HTTP appenders still buffer.
 
@@ -191,8 +194,10 @@ retried.
 LokiAppender.contextFields = mapOf("instance" to hostName, "version" to appVersion)
 ```
 
-They suit values that rarely change. For per-request values such as a call ID in a concurrent server, put them into the
-message instead, since concurrent requests would overwrite each other's fields.
+They suit values that rarely change. For per-request values such as a correlation ID in a concurrent server, use the
+SLF4J MDC instead (see [MDC / request context](#mdc--request-context)): each MDC entry becomes a separate JSON field of
+that line and takes precedence over a context field with the same key. `message` stays without MDC suffix.
+`level`, `tag` and `message` are reserved: context fields or MDC entries with these keys are left out.
 
 **Log line format** sent to Loki:
 
@@ -202,7 +207,8 @@ message instead, since concurrent requests would overwrite each other's fields.
   "tag": "Handler",
   "message": "...",
   "instance": "web-1",
-  "version": "1.4.0"
+  "version": "1.4.0",
+  "correlationId": "c-1"
 }
 ```
 
@@ -296,7 +302,9 @@ Every uncaught exception is logged as `CRASH` with tag `UncaughtException`, the 
 Loki/HTTP buffers are flushed, and the exception is handed to the default handler that was installed before. Logging
 and flushing together take at most `flushTimeout`, so even a destination that hangs cannot keep the crash from that
 handler. Logging runs on a short-lived helper thread, so with `format(KLogger.defaultFormat(threadName = true))` the
-CRASH line shows `[klogger-crash]`; the crashed thread's name is part of the message. If no thread can be started at all
+CRASH line shows `[klogger-crash]`; the crashed thread's name is part of the message. The line still carries the MDC of
+the crashing thread (see [MDC / request context](#mdc--request-context)), also for a coroutine that fails without
+exception handler while its `MDCContext` is set. If no thread can be started at all
 (`OutOfMemoryError: unable to create native thread`), the crash is still logged, on the crashing thread, but not
 flushed. A thread that a destination starts while a crash is logged is not logged again if it crashes too, so a broken
 destination cannot start an endless crash-log loop. The platform's crash behaviour stays intact: the JVM still prints
@@ -367,10 +375,64 @@ Behaviour:
   the bridge threshold.
 - The tag is the abbreviated logger name, e.g. `io.ktor.server.Application` becomes `i.k.s.Application`.
 - TRACE is always dropped because Klogger has no TRACE level.
-- A non-empty MDC (e.g. the `call-id` of Ktor's CallId plugin) is appended to the message as `{call-id=...}`.
+- A non-empty MDC (e.g. the `call-id` of Ktor's CallId plugin) is added like to every Klogger line, e.g. as
+  `{call-id=...}` (see [MDC / request context](#mdc--request-context)). `includeMdc = false` removes it here too.
 - SLF4J 1.7 does not detect the provider. SLF4J 2.x is required.
 - If another provider such as logback is on the classpath too, SLF4J prints a warning and uses one of them. Select
   Klogger explicitly with `-Dslf4j.provider=bayern.kickner.klogger.slf4j.KloggerServiceProvider`.
+
+## MDC / request context
+
+Values that apply to one request or session, such as a correlation ID or the calling system, belong in the SLF4J MDC
+(Mapped Diagnostic Context). If slf4j-api is on the classpath (e.g. through Ktor), Klogger adds the MDC of the logging
+thread to every line: to your own `infoLog { }`, `errorLog(...)` or `staticLog(...)` calls as well as to library output
+that comes in through the [SLF4J bridge](#slf4j-bridge).
+
+```kotlin
+// e.g. in a Ktor interceptor per request, or as coroutine context per session
+withContext(MDCContext(mapOf("correlationId" to id, "system" to "checkout"))) {
+  infoLog { "loadOrder → 200" }                   // Klogger's own log
+  LoggerFactory.getLogger("io.ktor.x").info("…")  // library log via the SLF4J bridge
+}
+```
+
+Output:
+
+- **Console, file, custom, cached forwarding and HTTP**: suffix ` {key=value, ...}` with sorted keys, placed before the
+  first line break of the message, so before a stack trace:
+  ```
+  12.10.2026 14:03:12 INFO/OrderService: loadOrder → 200 {correlationId=c-1, system=checkout}
+  ```
+- **Loki**: separate JSON fields, `message` stays without suffix. Filter in Grafana with
+  `{app="my-app"} | json | correlationId="c-1"`. MDC fields take precedence over `contextFields`; `level`, `tag` and
+  `message` are reserved.
+  ```json
+  {"level":"INFO","tag":"OrderService","message":"loadOrder → 200","correlationId":"c-1","system":"checkout"}
+  ```
+
+Without an MDC the output is unchanged. Without slf4j-api on the classpath (e.g. Android without SLF4J) nothing happens.
+
+To leave the MDC out everywhere, bridged lines included:
+
+```kotlin
+KLogger.configure { includeMdc = false }
+```
+
+**Coroutines:** set the MDC only through `MDCContext` from `org.jetbrains.kotlinx:kotlinx-coroutines-slf4j`, as
+`withContext(MDCContext(...))` or as context element of `launch`/`async`. `MDCContext` sets the MDC every time the
+coroutine resumes, on whichever thread that is, and restores the thread's previous MDC when it suspends. A plain
+`MDC.put` inside a coroutine is lost at the next suspension or leaks into other coroutines on the same thread. Outside
+of coroutines, `MDC.put`/`MDC.remove` work as usual.
+
+Details:
+
+- The MDC is read synchronously on the logging thread when the line passes the level filter, never later on a
+  background thread.
+- Klogger's SLF4J provider keeps the MDC in a plain `ThreadLocal`: threads created while an MDC is set (e.g. a new
+  pool worker) do not inherit it, so they never log a stale correlation ID. If another SLF4J provider such as logback
+  is selected, its MDC is used.
+- With slf4j-api on the classpath, the first log line initializes SLF4J unless something else did that before.
+  SLF4J may print its own notes on stderr at that moment, e.g. about several providers.
 
 ## Examples
 
@@ -486,6 +548,28 @@ affected by `format`. The format is kept across later `configure` calls.
 - Klogger depends on `kotlinx-coroutines-core` and `kotlinx-serialization-json`, both are pulled in transitively.
   `kotlinx-coroutines-core` is exposed as an `api` dependency, so `CoroutineScope` (e.g. `LokiAppender.scope.cancel()`)
   is available in your code without declaring it yourself.
+
+## Changes in 0.5.0
+
+- The SLF4J MDC is added to every log line, to Klogger's own lines as well (before, only lines coming in through the
+  SLF4J bridge had it): as suffix ` {key=value, ...}` for console, file, custom, cached forwarding and HTTP, as separate
+  JSON fields for Loki. See [MDC / request context](#mdc--request-context).
+- Loki: MDC entries become JSON fields of each line and take precedence over `contextFields`. `level`, `tag` and
+  `message` are reserved and can no longer be overwritten by `contextFields` or the MDC.
+- The SLF4J bridge no longer appends the MDC itself; Klogger does that for every line, so it never appears twice. The
+  keys are now sorted, and the suffix is placed before the first line break of the message (before: after the whole
+  message text, in random key order).
+- The MDC is no longer inherited by newly created threads: Klogger's SLF4J provider uses its own `KloggerMdcAdapter`
+  instead of SLF4J's `BasicMDCAdapter`.
+- New DSL property `includeMdc` (default `true`) switches the MDC off for all lines, bridged lines included.
+- The CRASH line of `logUncaughtExceptions` carries the MDC of the crashing thread, although it is logged on a helper
+  thread.
+
+0.5.0 is source compatible with 0.4.x and adds no dependency. Without an MDC the output is byte-identical to 0.4.0. If
+your application sets an MDC, your own lines now carry it too; `includeMdc = false` restores the 0.4.0 output of your
+own lines, but also removes the MDC from bridged lines. Like the 0.4.0 options, the new DSL property `includeMdc` takes
+precedence over a member of the same name in your own class inside `configure { }`; write `this@MyClass.includeMdc`
+in that case.
 
 ## Upgrading to 0.4.0
 

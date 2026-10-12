@@ -1,5 +1,6 @@
 package bayern.kickner.klogger.loki
 
+import bayern.kickner.klogger.ContextAwareDestination
 import bayern.kickner.klogger.Destination
 import bayern.kickner.klogger.KLogger
 import bayern.kickner.klogger.LoggerDsl
@@ -51,6 +52,12 @@ import kotlin.time.TimeSource
  * [contextFields] holds arbitrary key-value pairs that are embedded into every log line.
  * Filterable in Loki via `{app="myapp"} | json | callId = "..."`.
  * Simply overwrite at any time: `LokiAppender.contextFields = mapOf("call-id" to id, "tenant" to name)`
+ * They are global for the whole process, so they suit values that rarely change.
+ *
+ * Per request or per thread, use the SLF4J MDC instead: unless [LoggerDsl.includeMdc] is off, the MDC of the
+ * logging thread is added to each line as separate JSON fields (`message` itself stays without MDC suffix).
+ * MDC fields take precedence over [contextFields] with the same key. `level`, `tag` and `message` are reserved:
+ * neither [contextFields] nor the MDC can overwrite them, such keys are left out.
  *
  * ## Setup
  * Single-line setup via the [logToLoki] extension inside `KLogger.configure`:
@@ -68,7 +75,7 @@ import kotlin.time.TimeSource
  * ## Loki data format
  * Each batch is sent as a single HTTP POST to `/loki/api/v1/push`.
  * The `app` label identifies the application in Loki.
- * Log lines are JSON and always contain `level`, `tag`, `message`, plus all context fields.
+ * Log lines are JSON and always contain `level`, `tag`, `message`, plus all context fields and MDC fields.
  * Example: `{"level":"INFO","tag":"Handler","message":"...","callId":"0049123456","tenant":"Foo"}`
  */
 object LokiAppender {
@@ -147,11 +154,16 @@ object LokiAppender {
     @Volatile
     private var minLevel: KLogger.Level? = null
 
-    /** The one destination instance representing this appender. Registered by [logToLoki]. */
-    internal val destination: Destination = object : Destination {
-        override fun log(level: KLogger.Level, tag: String, message: String) {
+    /**
+     * The one destination instance representing this appender. Registered by [logToLoki].
+     * Context aware: KLogger hands it the raw message plus the MDC snapshot, which become separate JSON fields.
+     */
+    internal val destination: Destination = object : ContextAwareDestination {
+        override fun log(level: KLogger.Level, tag: String, message: String) = log(level, tag, message, emptyMap())
+
+        override fun log(level: KLogger.Level, tag: String, message: String, context: Map<String, String>) {
             val min = minLevel
-            if (min == null || level >= min) enqueue(level.name, tag, message)
+            if (min == null || level >= min) enqueue(level.name, tag, message, context)
         }
 
         override fun flush(timeout: Duration) = drain(timeout)
@@ -208,17 +220,24 @@ object LokiAppender {
         }
     }
 
+    /** JSON fields of every log line that neither [contextFields] nor the MDC may overwrite. */
+    private val RESERVED_KEYS = setOf("level", "tag", "message")
+
     /**
      * Writes a log entry non-blocking into the channel.
-     * Captures the current context as a snapshot in the entry.
+     * Captures [contextFields] merged with [context] (the MDC snapshot, wins on equal keys) as a snapshot in the
+     * entry, without the reserved keys `level`, `tag` and `message`.
      * When the buffer is full, [BufferOverflow.DROP_OLDEST] kicks in automatically.
      */
-    internal fun enqueue(level: String, tag: String, message: String) {
+    internal fun enqueue(level: String, tag: String, message: String, context: Map<String, String> = emptyMap()) {
         val nowNs = System.currentTimeMillis() * 1_000_000L
         // updateAndGet guarantees atomic collision avoidance: always >= nowNs and > last value
         val tsNs = lastTimestampNs.updateAndGet { prev -> maxOf(prev + 1, nowNs) }
-        // toMap() copies: a caller-owned MutableMap must not leak later mutations into this entry
-        channel.trySend(Entry(tsNs.toString(), level, tag, message, contextFields.toMap()))
+        // A copy: a caller-owned MutableMap must not leak later mutations into this entry
+        val merged = LinkedHashMap<String, String>(contextFields)
+        merged.putAll(context)
+        merged.keys.removeAll(RESERVED_KEYS)
+        channel.trySend(Entry(tsNs.toString(), level, tag, message, merged))
     }
 
     /**
@@ -326,10 +345,14 @@ object LokiAppender {
  * Logs are not sent immediately but buffered and periodically transmitted as a batch.
  * See [LokiAppender] for details on buffering strategy, timestamp handling, and context fields.
  *
+ * The SLF4J MDC of the logging thread is added to every line as separate JSON fields (see [LoggerDsl.includeMdc]);
+ * it takes precedence over [contextFields]. `level`, `tag` and `message` are reserved and cannot be overwritten.
+ *
  * @param lokiBaseUrl Base URL of the Loki server, e.g. `"http://loki:3100"`
  * @param appName Label value for the `"app"` key in Loki
  * @param bearerToken Bearer token for the `Authorization: Bearer` header (e.g. Grafana Cloud)
- * @param contextFields Arbitrary key-value pairs embedded into every log line
+ * @param contextFields Arbitrary key-value pairs embedded into every log line, global for the whole process.
+ *             MDC fields with the same key take precedence; `level`, `tag` and `message` are left out.
  * @param maxQueueSize Maximum buffer size. The oldest entry is dropped on overflow (default: 500).
  * @param flushInterval Interval between two flush runs (default: 1000 ms)
  * @param batchMaxSize Maximum number of entries per HTTP request to Loki (default: 50)

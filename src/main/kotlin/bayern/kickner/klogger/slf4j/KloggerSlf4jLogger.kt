@@ -2,10 +2,12 @@ package bayern.kickner.klogger.slf4j
 
 import bayern.kickner.klogger.KLogger
 import bayern.kickner.klogger.staticLog
-import org.slf4j.*
+import org.slf4j.ILoggerFactory
+import org.slf4j.IMarkerFactory
+import org.slf4j.Logger
+import org.slf4j.Marker
 import org.slf4j.event.Level
 import org.slf4j.helpers.AbstractLogger
-import org.slf4j.helpers.BasicMDCAdapter
 import org.slf4j.helpers.BasicMarkerFactory
 import org.slf4j.helpers.MessageFormatter
 import org.slf4j.spi.MDCAdapter
@@ -17,12 +19,13 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * If the application uses SLF4J, directly or through a library such as Ktor, SLF4J picks this provider up
  * automatically and Klogger handles all SLF4J output. Without SLF4J on the classpath this class is never loaded.
+ * Its MDC adapter is [KloggerMdcAdapter], whose values are not inherited by newly created threads.
  */
 class KloggerServiceProvider : SLF4JServiceProvider {
     // Created eagerly: SLF4J >= 2.0.17 calls getMDCAdapter() *before* initialize() (earlyBindMDCAdapter).
     private val loggerFactory: ILoggerFactory = KloggerLoggerFactory()
     private val markerFactory: IMarkerFactory = BasicMarkerFactory()
-    private val mdcAdapter: MDCAdapter = BasicMDCAdapter()
+    private val mdcAdapter: MDCAdapter = KloggerMdcAdapter()
 
     override fun getLoggerFactory(): ILoggerFactory = loggerFactory
     override fun getMarkerFactory(): IMarkerFactory = markerFactory
@@ -46,6 +49,9 @@ class KloggerLoggerFactory : ILoggerFactory {
  *
  * DEBUG, INFO, WARN and ERROR are mapped 1:1. TRACE has no Klogger counterpart and is always dropped.
  * CRASH is never produced. Markers are accepted but ignored.
+ *
+ * The MDC is not appended here: [KLogger] adds it to every line, these included (see
+ * [bayern.kickner.klogger.LoggerDsl.includeMdc]), so it never appears twice.
  */
 class KloggerSlf4jLogger internal constructor(name: String) : AbstractLogger() {
 
@@ -130,13 +136,8 @@ class KloggerSlf4jLogger internal constructor(name: String) : AbstractLogger() {
             val text = if (cleanArgs.isNullOrEmpty()) pattern.toString()
             else MessageFormatter.basicArrayFormat(pattern, cleanArgs)
 
-            val mdc = MDC.getCopyOfContextMap()?.takeIf { it.isNotEmpty() }
-            if (mdc == null && t == null) return text
-            return buildString {
-                append(text)
-                if (mdc != null) append(' ').append(mdc)
-                if (t != null) append('\n').append(t.stackTraceToString())
-            }
+            // No MDC here: KLogger adds it to every line, these included (see LoggerDsl.includeMdc)
+            return if (t == null) text else text + "\n" + t.stackTraceToString()
         }
     }
 }

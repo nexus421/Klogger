@@ -2,7 +2,6 @@ package bayern.kickner.klogger.slf4j
 
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
-import org.slf4j.helpers.BasicMDCAdapter
 import org.slf4j.spi.SLF4JServiceProvider
 import java.util.*
 import kotlin.test.*
@@ -20,7 +19,7 @@ class KloggerServiceProviderTest {
     fun `SLF4J binds the Klogger logger factory and MDC adapter`() {
         assertIs<KloggerLoggerFactory>(LoggerFactory.getILoggerFactory())
         assertIs<KloggerSlf4jLogger>(LoggerFactory.getLogger("x.Y"))
-        assertIs<BasicMDCAdapter>(MDC.getMDCAdapter())
+        assertIs<KloggerMdcAdapter>(MDC.getMDCAdapter())
     }
 
     @Test
