@@ -30,6 +30,11 @@ import kotlin.time.TimeSource
  *
  * SLF4J: if anything in the application logs via SLF4J 2.x (for example Ktor), Klogger takes over that output
  * automatically and writes it to the configured destinations. See [bayern.kickner.klogger.slf4j.slf4jBridge].
+ *
+ * MDC: if slf4j-api is on the classpath, the SLF4J MDC of the logging thread is added to every line, Klogger's own
+ * and the bridged ones: as suffix ` {correlationId=c-1, system=checkout}` for console, file, custom, cached forwarding
+ * and HTTP destinations, as separate JSON fields for Loki. With coroutines, set it via
+ * `kotlinx.coroutines.slf4j.MDCContext`. Switch it off with [LoggerDsl.includeMdc].
  */
 object KLogger {
     /**
@@ -84,6 +89,7 @@ object KLogger {
      * @property minLevel Only messages >= this level are processed, unless debug is true.
      * @property format Line format for console and file destinations. See [LoggerDsl.format].
      * @property flushOnShutdown Timeout of the JVM shutdown hook flush, `null` = no hook. See [LoggerDsl.flushOnShutdown].
+     * @property includeMdc If true, the SLF4J MDC of the logging thread is added to every line. See [LoggerDsl.includeMdc].
      */
     internal data class Config(
         val destinations: MutableList<Destination> = CopyOnWriteArrayList(),
@@ -91,6 +97,7 @@ object KLogger {
         var minLevel: Level = Level.DEBUG,
         var format: (level: Level, tag: String, message: String) -> String = DEFAULT_FORMAT,
         var flushOnShutdown: Duration? = null,
+        var includeMdc: Boolean = true,
     )
 
     @Volatile
@@ -217,6 +224,18 @@ object KLogger {
     fun crash(tag: String, msg: () -> String) = log(Level.CRASH, tag, msg)
 
     /**
+     * Logs a CRASH message with [mdc], an MDC snapshot taken on another thread by [mdcSnapshot]. Used for an uncaught
+     * exception: it is logged on a helper thread, but the line must carry the MDC of the crashing thread.
+     */
+    internal fun crash(tag: String, mdc: Map<String, String>, msg: () -> String) = log(Level.CRASH, tag, msg, mdc)
+
+    /**
+     * The MDC of the calling thread if [LoggerDsl.includeMdc] is on, otherwise empty (SLF4J is not touched then).
+     * Never throws.
+     */
+    internal fun mdcSnapshot(): Map<String, String> = if (config.includeMdc) MdcSupport.snapshot() else emptyMap()
+
+    /**
      * Returns true if a message of [level] would currently be dispatched, honouring [LoggerDsl.minLevel]
      * and [LoggerDsl.debug]. The SLF4J bridge uses it to answer `isDebugEnabled()` and friends correctly,
      * so callers that guard expensive log statements skip them entirely.
@@ -232,17 +251,30 @@ object KLogger {
     /**
      * Internal dispatcher that reads the current config and writes to all destinations.
      * Errors in destinations are caught so logging never interferes with the app.
+     *
+     * The MDC is read here, synchronously on the calling thread: only there it is set correctly (with coroutines
+     * through `MDCContext`). Text destinations get it as message suffix, a [ContextAwareDestination] as a map.
+     *
+     * @param mdc MDC snapshot taken on another thread, see [crash]; `null` = read the MDC of the calling thread.
      */
-    private fun log(level: Level, tag: String, msg: () -> String) {
+    private fun log(level: Level, tag: String, msg: () -> String, mdc: Map<String, String>? = null) {
         if (isEnabled(level).not()) return
         val message = msg()
+        // Read once, so includeMdc and destinations come from the same config instance
+        val cfg = config
+        val context = if (cfg.includeMdc) mdc ?: MdcSupport.snapshot() else emptyMap()
         // Prints a hint one time if logging is used but not configured.
-        if (!checkIfLoggingIsConfigured && config.destinations.isEmpty()) {
+        if (!checkIfLoggingIsConfigured && cfg.destinations.isEmpty()) {
             System.err.println("No destinations configured. No Logging. Use Logger.configure { ... } to add destinations.")
             checkIfLoggingIsConfigured = true
         }
-        config.destinations.forEach { dest ->
-            runCatching { dest.log(level, tag, message) }
+        // Built at most once per call, and only if a text destination needs it
+        val textMessage by lazy(LazyThreadSafetyMode.NONE) { appendContext(message, context) }
+        cfg.destinations.forEach { dest ->
+            runCatching {
+                if (dest is ContextAwareDestination) dest.log(level, tag, message, context)
+                else dest.log(level, tag, textMessage)
+            }
         }
     }
 }

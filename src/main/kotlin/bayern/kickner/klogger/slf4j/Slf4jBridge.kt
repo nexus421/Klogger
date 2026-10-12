@@ -62,6 +62,9 @@ class Slf4jBridgeDsl internal constructor() {
  * Klogger provider on its own and all that output goes to the configured Klogger destinations. This block only
  * tunes the bridge. Calling it again replaces the previous bridge settings instead of merging them.
  *
+ * The MDC is not handled here: like every Klogger line, a bridged line gets the MDC of the logging thread through
+ * [LoggerDsl.includeMdc] (on by default), so `includeMdc = false` removes it from bridged lines as well.
+ *
  * ```
  * KLogger.configure {
  *     logToConsole()

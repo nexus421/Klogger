@@ -34,6 +34,18 @@ interface Destination {
 }
 
 /**
+ * Destination that handles the MDC context as structured data instead of a text suffix. [KLogger] calls only the
+ * 4-parameter [log] on it. Deliberately internal, so the public [Destination] interface stays unchanged.
+ */
+internal interface ContextAwareDestination : Destination {
+    /**
+     * Like [Destination.log], with [message] without MDC suffix and [context] as the MDC snapshot of the logging
+     * thread (sorted by key, empty if there is none or [LoggerDsl.includeMdc] is off).
+     */
+    fun log(level: Level, tag: String, message: String, context: Map<String, String>)
+}
+
+/**
  * A logging destination that writes log messages to the console.
  *
  * Log messages with levels `ERROR` and `CRASH` are written to `System.err`,

@@ -184,7 +184,8 @@ class LoggerDsl internal constructor(private val cfg: KLogger.Config) {
      * trace), flushes buffering destinations and then hands the exception to the default handler that was
      * installed before. Logging and flushing together take at most [flushTimeout]; even a destination that hangs
      * cannot keep the crash from the previous handler. Logging runs on a helper thread `klogger-crash` (with
-     * `defaultFormat(threadName = true)` the line shows that name; the crashed thread is named in the message).
+     * `defaultFormat(threadName = true)` the line shows that name; the crashed thread is named in the message). The line
+     * still carries the MDC of the crashing thread (see [includeMdc]).
      * If no thread can be started (e.g. `OutOfMemoryError: unable to create native thread`), the crash is logged on
      * the crashing thread instead, without flush. Crashes of threads that a destination starts while logging a
      * crash are handed on but not logged again, so a broken destination cannot cause an endless crash-log loop. The platform's crash behaviour stays intact: the JVM still
@@ -211,5 +212,20 @@ class LoggerDsl internal constructor(private val cfg: KLogger.Config) {
         get() = cfg.debug
         set(value) {
             cfg.debug = value
+        }
+
+    /**
+     * Adds the SLF4J MDC of the logging thread to every log line (default: true). Text destinations (console, file,
+     * custom, cached forwarding, HTTP) receive it as suffix ` {k1=v1, k2=v2}` with sorted keys, placed before the
+     * first line break of the message; Loki receives it as separate JSON fields. Without slf4j-api on the classpath
+     * this has no effect. Setting it to false also removes the MDC from lines that come in through the SLF4J bridge.
+     *
+     * With coroutines, set the MDC only through `kotlinx.coroutines.slf4j.MDCContext`, never with `MDC.put` inside a
+     * coroutine: such a value is lost at the next suspension or leaks into other coroutines on the same thread.
+     */
+    var includeMdc: Boolean
+        get() = cfg.includeMdc
+        set(value) {
+            cfg.includeMdc = value
         }
 }

@@ -54,11 +54,14 @@ internal class KloggerUncaughtExceptionHandler private constructor(
      * @return `true` if this thread was interrupted while waiting (the caller restores the interrupt status).
      */
     private fun logAndFlush(t: Thread, e: Throwable): Boolean {
+        // Read here, on the crashing thread: the helper thread has its own, empty MDC. This also covers a coroutine
+        // that fails without exception handler, kotlinx.coroutines calls this handler while its MDCContext is active.
+        val mdc = KLogger.mdcSnapshot()
         val timeout = flushTimeout
         val deadline = TimeSource.Monotonic.markNow() + timeout
         val worker = runCatching {
             startWorker("klogger-crash") {
-                logCrash(t, e)
+                logCrash(t, e, mdc)
                 val remaining = -deadline.elapsedNow()
                 if (remaining.isPositive()) runCatching { KLogger.flush(remaining) }
             }
@@ -66,7 +69,7 @@ internal class KloggerUncaughtExceptionHandler private constructor(
             // No thread available (e.g. OutOfMemoryError: unable to create native thread, a common crash): log on
             // this thread instead, without flush, which needs a thread too. A hanging destination could block here,
             // but losing the log line of exactly this crash would be worse.
-            logCrash(t, e)
+            logCrash(t, e, mdc)
             return false
         }
         return try {
@@ -77,13 +80,16 @@ internal class KloggerUncaughtExceptionHandler private constructor(
         }
     }
 
-    /** Logs the crash as CRASH. Never throws: logging may fail (e.g. OutOfMemoryError), the flush must still run. */
-    private fun logCrash(t: Thread, e: Throwable) {
+    /**
+     * Logs the crash as CRASH with [mdc], the MDC of the crashing thread. Never throws: logging may fail
+     * (e.g. OutOfMemoryError), the flush must still run.
+     */
+    private fun logCrash(t: Thread, e: Throwable, mdc: Map<String, String>) {
         val outerMarker = insideCrashLogging.get()
         insideCrashLogging.set(true)
         try {
             runCatching {
-                KLogger.crash(TAG) { "Uncaught exception in thread \"${t.name}\"\n${e.stackTraceToString()}" }
+                KLogger.crash(TAG, mdc) { "Uncaught exception in thread \"${t.name}\"\n${e.stackTraceToString()}" }
             }
         } finally {
             insideCrashLogging.set(outerMarker)

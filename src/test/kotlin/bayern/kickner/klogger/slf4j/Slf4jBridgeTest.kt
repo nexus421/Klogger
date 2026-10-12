@@ -25,6 +25,12 @@ class Slf4jBridgeTest {
         }
     }
 
+    /** KLogger adds the MDC to every line: a value left behind would change the output of later test classes. */
+    @AfterTest
+    fun tearDown() {
+        MDC.clear()
+    }
+
     @Test
     fun `parameterized message is formatted and tag is abbreviated`() {
         LoggerFactory.getLogger("io.ktor.server.Application").info("Responding at {}:{}", "0.0.0.0", 8080)

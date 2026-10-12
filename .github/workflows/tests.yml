@@ -20,12 +20,13 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # check, not test: it also runs testWithoutSlf4j (the *WithoutSlf4jTest classes without SLF4J on the classpath)
       - name: Run tests
-        run: ./gradlew test --no-daemon
+        run: ./gradlew check --no-daemon
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: build/reports/tests/test
+          path: build/reports/tests
