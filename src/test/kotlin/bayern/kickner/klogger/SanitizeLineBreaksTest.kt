@@ -1,5 +1,7 @@
 package bayern.kickner.klogger
 
+import bayern.kickner.klogger.http.HttpLogAppender
+import bayern.kickner.klogger.http.logToHttp
 import bayern.kickner.klogger.loki.LokiAppender
 import bayern.kickner.klogger.loki.logToLoki
 import kotlinx.coroutines.CoroutineScope
@@ -10,6 +12,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import java.io.File
 import java.nio.file.Files
@@ -147,5 +150,56 @@ class SanitizeLineBreaksTest {
                 LokiAppender.contextFields = emptyMap()
             }
         }
+    }
+
+    @Test
+    fun `a forged line cannot be written to the console`() {
+        KLogger.configure { sanitizeLineBreaks(); logToConsole() }
+
+        val out = captureStdout { KLogger.info("tag") { forged } }
+
+        assertEquals(1, out.trimEnd().lines().size, out)
+        assertContains(out, "login failed\\n01.01.2026")
+    }
+
+    @Test
+    fun `cached forwarding passes the escaped message to its target`() {
+        KLogger.configure { sanitizeLineBreaks(); logToCachedForwarding(File(dir, "cache").path, target = { _, tag, message -> received.add(Line(tag, message)) }) }
+
+        KLogger.info("t\nag") { "a\nb" }
+
+        assertEquals(Line("t\\nag", "a\\nb"), received.single())
+    }
+
+    @Test
+    fun `the HTTP appender receives the escaped message`() {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        TestHttpServer().use { server ->
+            try {
+                val appender = HttpLogAppender(
+                    url = server.url,
+                    bodyBuilder = { batch -> batch.joinToString("\n") { it.message } },
+                    initialFlushInterval = 1.hours,
+                    initialScope = scope,
+                )
+                KLogger.configure { sanitizeLineBreaks(); logToHttp(appender) }
+
+                KLogger.info("tag") { forged }
+                appender.flush()
+
+                assertEquals("login failed\\n01.01.2026 00:00:00 INFO/Auth: login ok for admin", server.awaitRequests(1).single())
+            } finally {
+                scope.cancel()
+            }
+        }
+    }
+
+    @Test
+    fun `lines that come in through the SLF4J bridge are escaped as well`() {
+        KLogger.configure { sanitizeLineBreaks(); collect() }
+
+        LoggerFactory.getLogger("bridge.Test").info("a\nb")
+
+        assertEquals("a\\nb", received.single().message)
     }
 }
