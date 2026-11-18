@@ -36,6 +36,7 @@ Loki in production. Klogger keeps the log calls in your code independent of wher
 - [Per-destination level](#per-destination-level)
 - [SLF4J bridge](#slf4j-bridge)
 - [MDC / request context](#mdc--request-context)
+- [Untrusted text in logs](#untrusted-text-in-logs)
 - [Examples](#examples)
 - [Formatting](#formatting)
 - [Thread-safety](#thread-safety)
@@ -124,6 +125,7 @@ All `logTo*` functions accept an optional `minLevel` that applies to that destin
 | `flushOnShutdown`                                                                      | `null` (default) or a timeout: flush Loki/HTTP buffers in a JVM shutdown hook (see [Flushing and shutdown](#flushing-and-shutdown))                               |
 | `logUncaughtExceptions(flushTimeout = 2.seconds)`                                      | Log uncaught exceptions as CRASH and flush (see [Crash logging](#crash-logging))                                                                                  |
 | `includeMdc`                                                                           | `true` (default): add the SLF4J MDC to every line (see [MDC / request context](#mdc--request-context))                                                            |
+| `sanitizeLineBreaks(enabled = true)`                                                   | Escape `\r` and `\n` in tag, message and MDC of text destinations (see [Untrusted text in logs](#untrusted-text-in-logs))                                        |
 
 Outside the DSL, `KLogger.flush(timeout = 3.seconds)` sends everything the Loki/HTTP appenders still buffer.
 
@@ -434,6 +436,34 @@ Details:
 - With slf4j-api on the classpath, the first log line initializes SLF4J unless something else did that before.
   SLF4J may print its own notes on stderr at that moment, e.g. about several providers.
 
+## Untrusted text in logs
+
+Klogger writes tag, message and MDC values as they are. If one of them contains text from outside (a user name, a header,
+a request parameter) and that text holds a line break, a log reader sees an extra line that never happened:
+
+```kotlin
+KLogger.info("Auth") { "login failed for ${user}" }
+// user = "bob\n01.01.2026 00:00:00 INFO/Auth: login ok for admin" writes two lines to the file
+```
+
+Switch on `sanitizeLineBreaks()` to prevent that:
+
+```kotlin
+KLogger.configure {
+    logToFile(File("app.log"))
+    sanitizeLineBreaks()
+}
+```
+
+`\r` and `\n` in tag, message and MDC keys/values then become the two characters `\r` and `\n`, for console, file, custom,
+cached forwarding and HTTP destinations. Loki already receives the raw values as JSON fields and is not affected. Output
+without line breaks stays byte-identical, and the option is off by default.
+
+- A multi-line message becomes one line, **stack traces appended by `errorLog(msg, ex)` and `warnLog(ex) { }` included**.
+- Only `\r` and `\n` are escaped, not other control characters (e.g. ANSI escape sequences) and not a literal backslash.
+- The option applies to the logging call, not to your own `format { }` lambda: a custom format that adds text of its own
+  has to take care of that text itself.
+
 ## Examples
 
 **Log to file:**
@@ -539,6 +569,11 @@ affected by `format`. The format is kept across later `configure` calls.
 
 ## Notes
 
+- If a message lambda throws, the exception does not reach your code: the line reads `<log message failed: <exception>>`
+  instead, at the level you logged it.
+- The Loki and HTTP appenders do not need the response body of a push. They read at most 8 KiB of it and for at most one
+  request timeout, then close the connection, so a huge or endlessly slow response can neither fill the heap nor hold the
+  send lock. A small body is consumed completely, so the connection can still be reused.
 - Message lambdas are **not evaluated** when filtered by `minLevel`, so the message string is never built.
   `errorLog(msg: String, ...)` takes a plain string, only the exception part is built lazily.
 - If a message is logged while no destination is configured, a hint is printed once to `stderr`.

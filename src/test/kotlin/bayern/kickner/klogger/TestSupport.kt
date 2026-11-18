@@ -3,6 +3,7 @@ package bayern.kickner.klogger
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -96,5 +97,32 @@ fun withCapturedStderr(block: (java.io.ByteArrayOutputStream) -> Unit) {
         block(buffer)
     } finally {
         System.setErr(original)
+    }
+}
+
+/**
+ * Endpoint whose response is written by [respond]; called on a server thread after the request body was read.
+ * Lets a test stream a huge or slow response. [requests] counts the requests received.
+ */
+class ScriptedHttpServer(respond: (com.sun.net.httpserver.HttpExchange) -> Unit) : AutoCloseable {
+    private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    private val executor = Executors.newCachedThreadPool { r -> Thread(r, "scripted-http-server").apply { isDaemon = true } }
+    val requests = AtomicInteger()
+
+    init {
+        server.executor = executor
+        server.createContext("/") { exchange ->
+            requests.incrementAndGet()
+            exchange.requestBody.readBytes()
+            respond(exchange)
+        }
+        server.start()
+    }
+
+    val url: String get() = "http://127.0.0.1:${server.address.port}"
+
+    override fun close() {
+        server.stop(0)
+        executor.shutdownNow()
     }
 }

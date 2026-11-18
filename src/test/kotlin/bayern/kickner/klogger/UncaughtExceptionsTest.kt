@@ -135,7 +135,10 @@ class UncaughtExceptionsTest {
 
             crashThread("worker-4", unprintable)
 
-            assertEquals(listOf("logged before the crash"), server.bodies.toList(), "flush was skipped")
+            // Flushed (the earlier line arrived), and the crash line says why its message is missing instead of vanishing
+            val body = server.bodies.single()
+            assertTrue(body.startsWith("logged before the crash\n<log message failed: "), "flush was skipped: $body")
+            assertContains(body, "cannot print")
             assertEquals(listOf<Throwable>(unprintable), previousCalls.map { it.second })
         }
         scope.cancel()

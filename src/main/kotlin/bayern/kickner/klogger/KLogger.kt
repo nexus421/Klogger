@@ -90,6 +90,7 @@ object KLogger {
      * @property format Line format for console and file destinations. See [LoggerDsl.format].
      * @property flushOnShutdown Timeout of the JVM shutdown hook flush, `null` = no hook. See [LoggerDsl.flushOnShutdown].
      * @property includeMdc If true, the SLF4J MDC of the logging thread is added to every line. See [LoggerDsl.includeMdc].
+     * @property sanitizeLineBreaks If true, line breaks in tag, message and MDC are escaped for text destinations. See [LoggerDsl.sanitizeLineBreaks].
      */
     internal data class Config(
         val destinations: MutableList<Destination> = CopyOnWriteArrayList(),
@@ -98,6 +99,7 @@ object KLogger {
         var format: (level: Level, tag: String, message: String) -> String = DEFAULT_FORMAT,
         var flushOnShutdown: Duration? = null,
         var includeMdc: Boolean = true,
+        var sanitizeLineBreaks: Boolean = false,
     )
 
     @Volatile
@@ -259,7 +261,8 @@ object KLogger {
      */
     private fun log(level: Level, tag: String, msg: () -> String, mdc: Map<String, String>? = null) {
         if (isEnabled(level).not()) return
-        val message = msg()
+        // A failing message lambda must not reach the host (see "never throws"): the line says what went wrong instead
+        val message = runCatching(msg).getOrElse { "<log message failed: $it>" }
         // Read once, so includeMdc and destinations come from the same config instance
         val cfg = config
         val context = if (cfg.includeMdc) mdc ?: MdcSupport.snapshot() else emptyMap()
@@ -268,12 +271,17 @@ object KLogger {
             System.err.println("No destinations configured. No Logging. Use Logger.configure { ... } to add destinations.")
             checkIfLoggingIsConfigured = true
         }
+        val sanitize = cfg.sanitizeLineBreaks
+        val textTag = if (sanitize) escapeLineBreaks(tag) else tag
         // Built at most once per call, and only if a text destination needs it
-        val textMessage by lazy(LazyThreadSafetyMode.NONE) { appendContext(message, context) }
+        val textMessage by lazy(LazyThreadSafetyMode.NONE) {
+            if (sanitize) appendContext(escapeLineBreaks(message), context.mapKeysAndValues(::escapeLineBreaks))
+            else appendContext(message, context)
+        }
         cfg.destinations.forEach { dest ->
             runCatching {
                 if (dest is ContextAwareDestination) dest.log(level, tag, message, context)
-                else dest.log(level, tag, textMessage)
+                else dest.log(level, textTag, textMessage)
             }
         }
     }

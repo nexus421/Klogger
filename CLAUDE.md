@@ -55,7 +55,10 @@ subpackages.
   message lambda only if not filtered, then (if `Config.includeMdc`, default `true`) snapshots the SLF4J MDC
   synchronously on the calling thread — the only place where it is correct, with coroutines via `MDCContext` — and
   calls every destination: a `ContextAwareDestination` with the raw message plus the context map, all others with
-  `appendContext(message, context)` (built lazily, at most once per call). It swallows destination exceptions with
+  `appendContext(message, context)` (built lazily, at most once per call). The message lambda runs inside `runCatching`:
+  a throwing lambda becomes the line `<log message failed: …>` instead of reaching the host. With the opt-in
+  `sanitizeLineBreaks()` (`Config.sanitizeLineBreaks`) text destinations get tag, message and MDC with `\r`/`\n`
+  escaped (`escapeLineBreaks` in `MdcSupport.kt`); `ContextAwareDestination`s (Loki) always get the raw values. It swallows destination exceptions with
   `runCatching` so a broken destination never breaks the app. `KLogger.flush(timeout)` calls every destination's
   `flush` on a short-lived daemon thread and `join`s it with the timeout; it returns `true` only if the worker finished
   and every destination reported its buffer empty (a throwing flush counts as incomplete): that makes the timeout a hard
@@ -118,7 +121,9 @@ subpackages.
   `contextFields` with the MDC context (MDC wins) and removes the reserved keys `level`/`tag`/`message`, so `message`
   stays the raw message and nothing can overwrite the three fixed fields; all send failures are caught and reported on
   stderr (never via `errorLog`, which would feed them back into the appender), so Loki being down never affects the
-  host app. Sending goes through `sendBatch(timeoutMs)` under a `ReentrantLock` shared by the flush loop (`flush()`) and
+  host app. Response bodies go through `discardResponseBody` (`ResponseDrain.kt`, shared with the HTTP appender): at most
+  8 KiB and at most the request timeout, then `disconnect()`, so no response can fill the heap or hold `sendLock`;
+  redirects are still followed (changing that would break 307/308 setups). Sending goes through `sendBatch(timeoutMs)` under a `ReentrantLock` shared by the flush loop (`flush()`) and
   `drain(timeout): Boolean` (called via `KLogger.flush`; sends nothing once the flush loop was cancelled via
   `scope.cancel()`, the documented stop): the lock serializes network I/O so a drain waits for an in-flight batch
   and batches stay in order. It is a deliberate exception to the "no external locking" convention — it guards I/O, not

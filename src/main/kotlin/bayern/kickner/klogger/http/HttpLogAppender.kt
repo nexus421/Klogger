@@ -1,6 +1,7 @@
 package bayern.kickner.klogger.http
 
 import bayern.kickner.klogger.Destination
+import bayern.kickner.klogger.discardResponseBody
 import bayern.kickner.klogger.KLogger
 import bayern.kickner.klogger.LoggerDsl
 import kotlinx.coroutines.*
@@ -237,11 +238,11 @@ class HttpLogAppender(
             headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
             conn.outputStream.use { it.write(bodyBytes) }
             val responseCode = conn.responseCode
-            // Consume body to allow JVM keep-alive connection reuse
+            // Consume a small body to allow JVM keep-alive connection reuse; a large or slow one is cut off
             if (responseCode in 200..299) {
-                conn.inputStream.use { it.readBytes() }
+                conn.discardResponseBody(conn.inputStream, timeoutMs)
             } else {
-                conn.errorStream?.use { it.readBytes() }
+                conn.discardResponseBody(conn.errorStream, timeoutMs)
                 System.err.println("HttpLogAppender: HTTP $responseCode")
             }
         }.onFailure {

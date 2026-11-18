@@ -228,4 +228,25 @@ class LoggerDsl internal constructor(private val cfg: KLogger.Config) {
         set(value) {
             cfg.includeMdc = value
         }
+
+    /**
+     * Escapes carriage returns and line feeds in the tag, the message and the MDC keys and values as the two characters
+     * `\r` and `\n` (default: off). Without it, untrusted text such as a user name can contain a line break followed by a
+     * fake log line, so a log reader sees an entry that never happened (log forging).
+     *
+     * Applies to console, file, custom, cached forwarding and HTTP destinations, i.e. to everything that receives text.
+     * Loki is not affected: it receives the raw values as JSON fields, which already escape line breaks.
+     * Output without line breaks stays byte-identical.
+     *
+     * A multi-line message becomes one line, so this includes stack traces appended by `errorLog(msg, ex)` and
+     * `warnLog(ex) { }`. Only `\r` and `\n` are touched; other control characters and a literal backslash stay as they are.
+     *
+     * (A function rather than a property, like [format]: a property would shadow a member of the class that calls
+     * `configure { }`.)
+     *
+     * @param enabled `false` switches it off again, e.g. to override an earlier `configure` call.
+     */
+    fun sanitizeLineBreaks(enabled: Boolean = true) {
+        cfg.sanitizeLineBreaks = enabled
+    }
 }

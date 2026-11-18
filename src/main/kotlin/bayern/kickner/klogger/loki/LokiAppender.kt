@@ -2,6 +2,7 @@ package bayern.kickner.klogger.loki
 
 import bayern.kickner.klogger.ContextAwareDestination
 import bayern.kickner.klogger.Destination
+import bayern.kickner.klogger.discardResponseBody
 import bayern.kickner.klogger.KLogger
 import bayern.kickner.klogger.LoggerDsl
 import bayern.kickner.klogger.loki.LokiAppender.batchMaxSize
@@ -321,16 +322,17 @@ object LokiAppender {
             conn.readTimeout = timeoutMs
             conn.outputStream.use { it.write(bodyBytes) }
             val responseCode = conn.responseCode
-            // Consume the response body so the JVM can reuse the TCP connection (HTTP keep-alive)
+            // Consume a small response body so the JVM can reuse the TCP connection (HTTP keep-alive); a large or
+            // slow one is cut off instead of being buffered, see discardResponseBody
             if (responseCode in 200..299) {
-                conn.inputStream.use { it.readBytes() }
+                conn.discardResponseBody(conn.inputStream, timeoutMs)
             } else {
-                conn.errorStream?.use { it.readBytes() }
+                conn.discardResponseBody(conn.errorStream, timeoutMs)
                 // stderr, never KLogger: this appender is itself a KLogger destination, logging the
                 // failure would feed it straight back into the Loki buffer.
                 System.err.println("LokiAppender: HTTP $responseCode")
             }
-            // No disconnect() – allows TCP connection reuse via JVM keep-alive pool
+            // No disconnect() after a fully consumed body – allows TCP connection reuse via JVM keep-alive pool
         }.onFailure {
             // Loki unreachable → drop the batch, application keeps running
             System.err.println("LokiAppender: send failed – ${it.message}")

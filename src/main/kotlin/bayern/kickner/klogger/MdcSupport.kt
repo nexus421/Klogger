@@ -52,3 +52,15 @@ internal fun appendContext(message: String, context: Map<String, String>): Strin
     val nl = message.indexOf('\n')
     return if (nl < 0) message + suffix else message.substring(0, nl) + suffix + message.substring(nl)
 }
+
+/**
+ * Replaces carriage returns and line feeds with the two characters `\r` and `\n`, so that untrusted text cannot start
+ * a new log line. Text without line breaks is returned as is. Used by [LoggerDsl.sanitizeLineBreaks].
+ */
+internal fun escapeLineBreaks(text: String): String {
+    if (text.indexOf('\n') < 0 && text.indexOf('\r') < 0) return text
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+}
+
+internal fun Map<String, String>.mapKeysAndValues(transform: (String) -> String): Map<String, String> =
+    entries.associateTo(LinkedHashMap(size)) { transform(it.key) to transform(it.value) }
